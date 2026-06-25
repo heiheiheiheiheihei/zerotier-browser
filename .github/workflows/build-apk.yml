@@ -57,11 +57,7 @@ jobs:
           echo "Found $SO_COUNT .so files"
 
           # Minimal manifest
-          cat > $AAR_DIR/AndroidManifest.xml << 'EOF'
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="com.zerotier.libzt">
-          </manifest>
-          EOF
+          printf '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.zerotier.libzt"></manifest>' > $AAR_DIR/AndroidManifest.xml
 
           cd $AAR_DIR
           zip -r ../libzt.aar . || true
@@ -110,13 +106,8 @@ jobs:
             echo "Using real libzt.aar"
           else
             echo "Creating stub libzt.aar for build testing..."
-            # Stub: minimal valid AAR to satisfy Gradle dependency resolution
             TMPDIR=$(mktemp -d)
-            cat > $TMPDIR/AndroidManifest.xml << 'EOF'
-            <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-                package="com.zerotier.libzt">
-            </manifest>
-            EOF
+            printf '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.zerotier.libzt"></manifest>' > $TMPDIR/AndroidManifest.xml
             cd $TMPDIR
             zip -r $GITHUB_WORKSPACE/app/libs/libzt.aar .
             cd $GITHUB_WORKSPACE
