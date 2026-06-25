@@ -6,6 +6,7 @@ import android.net.http.SslError
 import android.util.Log
 import android.webkit.*
 import okhttp3.*
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import java.io.ByteArrayInputStream
 import java.net.Proxy as JavaProxy
@@ -194,7 +195,7 @@ class ZTWebViewClient(
         handler: SslErrorHandler?,
         error: SslError?
     ) {
-        val url = error?.url?.host?.toString() ?: ""
+        val url = try { java.net.URI(error?.url ?: "").host ?: "" } catch (_: Exception) { "" }
         // [FIX#8] 仅 ZT 子网内放行自签名证书
         if (shouldUseProxy(url)) {
             handler?.proceed()
