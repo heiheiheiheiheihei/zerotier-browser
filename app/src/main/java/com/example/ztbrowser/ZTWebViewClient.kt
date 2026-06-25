@@ -194,7 +194,7 @@ class ZTWebViewClient(
         handler: SslErrorHandler?,
         error: SslError?
     ) {
-        val url = error?.url?.host ?: ""
+        val url = error?.url?.host?.toString() ?: ""
         // [FIX#8] 仅 ZT 子网内放行自签名证书
         if (shouldUseProxy(url)) {
             handler?.proceed()
