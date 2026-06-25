@@ -37,7 +37,7 @@ jobs:
           make android || echo "LIBZT_BUILD_FAILED=true" >> $GITHUB_ENV
 
       - name: Collect libzt .so files
-        id: collect
+        id: build
         working-directory: libzt
         run: |
           AAR_DIR="libzt-aar-temp"
@@ -75,7 +75,6 @@ jobs:
             echo "aar-available=false" >> $GITHUB_OUTPUT
             echo "libzt.aar creation failed"
           fi
-        id: build
 
       - name: Upload libzt.aar artifact
         if: steps.build.outputs.aar-available == 'true'
