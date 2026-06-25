@@ -362,7 +362,10 @@ class ZTProxyServer(
             isAccessible = true
         }.newInstance(fileDescriptor)
 
-        val socket = Socket(socketImplClass.getDeclaredConstructor().apply {
+        // Use reflection to access protected Socket(SocketImpl) constructor
+        val socketCtor = Socket::class.java.getDeclaredConstructor(java.net.SocketImpl::class.java)
+        socketCtor.isAccessible = true
+        val socket = socketCtor.newInstance(socketImplClass.getDeclaredConstructor().apply {
             isAccessible = true
         }.newInstance() as java.net.SocketImpl) ?: throw Exception("Failed to create Socket from fd")
 
