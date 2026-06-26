@@ -45,16 +45,24 @@ class MainActivity : AppCompatActivity() {
         loadConfig()
 
         // 初始化持久化日志并自动复制到剪贴板（闪退后可粘贴反馈）
+        ZeroTierService.log("D", "onCreate: after loadConfig")
         ZeroTierService.setupFileLogging(this)
+        ZeroTierService.log("D", "onCreate: after setupFileLogging")
         copyLogToClipboardOnStart()
+        ZeroTierService.log("D", "onCreate: after copyLogToClipboardOnStart")
 
         proxyServer = ZTProxyServer(port = 1080, ztSubnets = ztSubnets)
+        ZeroTierService.log("D", "onCreate: after ZTProxyServer init")
 
         setupWebView()
+        ZeroTierService.log("D", "onCreate: after setupWebView")
         setupToolbar()
+        ZeroTierService.log("D", "onCreate: after setupToolbar")
         observeZeroTierStatus()
+        ZeroTierService.log("D", "onCreate: after observeZeroTierStatus")
 
         if (ztNetworkId.isNotEmpty() && ZeroTierService.isValidNetworkId(ztNetworkId)) {
+            ZeroTierService.log("D", "onCreate: calling startZeroTier with $ztNetworkId")
             startZeroTier()
         } else if (ztNetworkId.isNotEmpty()) {
             Toast.makeText(this, "已保存的 Network ID 格式无效，请重新配置", Toast.LENGTH_LONG).show()
@@ -274,6 +282,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 }
+
 
 
 
