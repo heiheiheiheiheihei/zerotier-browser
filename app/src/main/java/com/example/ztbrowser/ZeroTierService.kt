@@ -57,11 +57,16 @@ object ZeroTierService {
         logFileWriter = PrintWriter(file, "UTF-8").apply {
             val ts = logDateFormat.format(Date())
             write("[$ts] [I] === App started ===\n")
+            // 立即刷入内存缓冲区的已有日志（init 阶段的日志）
+            synchronized(logBuffer) {
+                for (entry in logBuffer) write(entry + "\n")
+            }
             flush()
         }
     }
 
     init {
+        log("I", "ZT init: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} / Android ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT}) / ${android.os.Build.SUPPORTED_ABIS.joinToString(",")}")
         try {
             System.loadLibrary("zt")
             nativeLibLoaded = true
@@ -114,19 +119,24 @@ object ZeroTierService {
                 "Arch: ${android.os.Build.SUPPORTED_ABIS.joinToString(",")}"
         val header = "=== ZeroTier Browser Log ===\n$deviceInfo\n\n"
 
-        // 优先从内存缓冲区取（当前进程日志）；若缓冲区为空则从持久化文件恢复（上次崩溃日志）
+        // 内存缓冲区 + 上次持久化日志（总是带上，崩溃时可对比）
         val memLog = synchronized(logBuffer) { logBuffer.joinToString("\n") }
-        if (memLog.isNotEmpty()) return header + memLog
+        val parts = mutableListOf<String>()
 
         logFilePath?.let { path ->
-            val curFile = File(path)
             val prevFile = File(path).resolveSibling("zt_log.prev.txt")
-            val parts = mutableListOf<String>()
-            if (prevFile.exists()) parts.add("=== Previous run (crashed?) ===\n" + prevFile.readText())
-            if (curFile.exists()) parts.add(curFile.readText())
-            if (parts.isNotEmpty()) return header + parts.joinToString("\n")
+            if (prevFile.exists()) parts.add("=== Previous run ===\n" + prevFile.readText())
         }
-        return header
+
+        if (memLog.isNotEmpty()) parts.add(memLog)
+        else {
+            logFilePath?.let { path ->
+                val curFile = File(path)
+                if (curFile.exists()) parts.add(curFile.readText())
+            }
+        }
+
+        return if (parts.isNotEmpty()) header + parts.joinToString("\n\n") else header
     }
 
     fun isValidNetworkId(id: String): Boolean {
