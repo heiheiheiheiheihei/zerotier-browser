@@ -86,6 +86,15 @@
                 android:contentDescription="主页" />
 
             <ImageView
+                android:id="@+id/btnCopyLog"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:src="@android:drawable/ic_menu_edit"
+                android:padding="6dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="复制日志" />
+
+            <ImageView
                 android:id="@+id/btnSettings"
                 android:layout_width="36dp"
                 android:layout_height="36dp"
@@ -142,3 +151,4 @@
             android:layout_height="match_parent" />
     </FrameLayout>
 </LinearLayout>
+
