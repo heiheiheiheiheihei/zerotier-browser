@@ -6,13 +6,11 @@ import android.os.HandlerThread
 import android.util.Log
 import com.zerotier.sockets.ZeroTierNative
 import com.zerotier.sockets.ZeroTierNode
-import com.example.ztbrowser.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.PrintWriter
-import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -56,7 +54,7 @@ object ZeroTierService {
         logFileWriter = PrintWriter(file, "UTF-8").apply {
             // 在文件头写入一条启动标记
             val ts = logDateFormat.format(Date())
-            write("[$ts] [I] === App started (ZT Browser v${BuildConfig.VERSION_NAME}) ===\n")
+            write("[$ts] [I] === App started ===\n")
             flush()
         }
     }
