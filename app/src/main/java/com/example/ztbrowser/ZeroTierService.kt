@@ -226,21 +226,28 @@ object ZeroTierService {
         pollRunnable?.let { ztHandler.removeCallbacks(it) }
         pollRunnable = null
 
-        if (nativeLibLoaded) {
-            try {
-                runOnZtThread {
-                    node?.leave(currentNetworkId)
-                    node?.stop()
-                    log("I", "ZeroTier stopped")
-                }
-            } catch (e: Throwable) {
-                log("E", "Error stopping", e)
-            }
-        }
+        // 捕获当前状态用于异步清理，避免在 stop 中阻塞调用线程（防止 ANR）
+        val nwid = currentNetworkId
+        val curNode = node
+        val shouldCleanup = nativeLibLoaded && curNode != null
 
         started = false
         currentNetworkId = 0L
+        currentNetworkIdHex = ""
+        node = null  // 置空，确保下次 start() 创建新节点而非复用已 stop 的旧节点
         _status.value = Status.STOPPED
+
+        if (shouldCleanup) {
+            ztHandler.post {
+                try {
+                    curNode.leave(nwid)
+                    curNode.stop()
+                    log("I", "ZeroTier stopped")
+                } catch (e: Throwable) {
+                    log("E", "Error stopping", e)
+                }
+            }
+        }
     }
 
     fun getNetworkAddress(): String? {
@@ -295,3 +302,4 @@ object ZeroTierService {
         }
     }
 }
+
