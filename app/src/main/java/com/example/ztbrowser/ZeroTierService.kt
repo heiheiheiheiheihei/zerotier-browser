@@ -32,6 +32,12 @@ object ZeroTierService {
     @Volatile
     private var nativeLibLoaded = false
 
+    // 缓存地址，避免 getNetworkAddress() 触发 runOnZtThread 阻塞主线程
+    @Volatile
+    private var cachedIPv4: String? = null
+    @Volatile
+    private var cachedIPv6: String? = null
+
     private val logBuffer = mutableListOf<String>()
     private val logDateFormat = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.getDefault())
 
@@ -101,38 +107,44 @@ object ZeroTierService {
                 latch.countDown()
             }
         }
-        latch.await(10, TimeUnit.SECONDS)
+        if (!latch.await(10, TimeUnit.SECONDS)) {
+            throw Exception("ZeroTier operation timed out (10s)")
+        }
         val err = error.get()
         if (err != null) throw err
         return result.get()
     }
 
-    fun start(context: Context, networkId: String): Result<Unit> {
+    fun start(context: Context, networkId: String) {
         if (started) {
             log("D", "Already started, skipping")
-            return Result.success(Unit)
+            return
         }
         log("I", "start() called, network=$networkId")
 
-        try {
-            if (!nativeLibLoaded) {
-                log("E", "Cannot start: libzt not loaded")
-                return Result.failure(IllegalStateException("libzt native library not loaded"))
-            }
-            if (!isValidNetworkId(networkId)) {
-                log("E", "Invalid Network ID: '$networkId'")
-                return Result.failure(IllegalArgumentException("Invalid Network ID"))
-            }
-
-            return runOnZtThread { startInternal(context, networkId) }
-        } catch (e: Throwable) {
-            log("E", "start exception: ${e.javaClass.simpleName}: ${e.message}", e)
+        if (!nativeLibLoaded) {
+            log("E", "Cannot start: libzt not loaded")
             _status.value = Status.OFFLINE
-            return Result.failure(Exception("${e.javaClass.simpleName}: ${e.message}"))
+            return
+        }
+        if (!isValidNetworkId(networkId)) {
+            log("E", "Invalid Network ID: '$networkId'")
+            _status.value = Status.OFFLINE
+            return
+        }
+
+        // 异步执行，不阻塞调用线程（防止主线程 ANR）
+        ztHandler.post {
+            try {
+                startInternal(context, networkId)
+            } catch (e: Throwable) {
+                log("E", "start exception: ${e.javaClass.simpleName}: ${e.message}", e)
+                _status.value = Status.OFFLINE
+            }
         }
     }
 
-    private fun startInternal(context: Context, networkId: String): Result<Unit> {
+    private fun startInternal(context: Context, networkId: String) {
         _status.value = Status.CONNECTING
         log("I", "startInternal on ZT thread, network=$networkId")
 
@@ -158,7 +170,7 @@ object ZeroTierService {
         log("I", "initFromStorage returned: $initResult")
         if (initResult != 0) {
             _status.value = Status.OFFLINE
-            return Result.failure(Exception("init failed: $initResult"))
+            return
         }
 
         log("D", "Calling node.start()...")
@@ -166,7 +178,7 @@ object ZeroTierService {
         log("I", "node.start returned: $startResult")
         if (startResult != 0) {
             _status.value = Status.OFFLINE
-            return Result.failure(Exception("start failed: $startResult"))
+            return
         }
 
         val nwid = networkId.toLong(16)
@@ -176,7 +188,7 @@ object ZeroTierService {
         if (joinResult != 0) {
             node!!.stop()
             _status.value = Status.OFFLINE
-            return Result.failure(Exception("join failed: $joinResult"))
+            return
         }
 
         currentNetworkId = nwid
@@ -185,7 +197,6 @@ object ZeroTierService {
 
         startPollingOnline(nwid)
         log("I", "startInternal done, polling started")
-        return Result.success(Unit)
     }
 
     private fun startPollingOnline(nwid: Long) {
@@ -202,6 +213,9 @@ object ZeroTierService {
                         val addr = node?.getIPv4Address(nwid)?.hostAddress ?: "unknown"
                         val addr6 = node?.getIPv6Address(nwid)?.hostAddress ?: ""
                         val mac = node?.getMACAddress(nwid) ?: ""
+                        // 缓存地址，供 getNetworkAddress() / get6PlaneAddress() 非阻塞读取
+                        cachedIPv4 = addr
+                        cachedIPv6 = addr6
                         log("I", "ONLINE | IPv4=$addr | IPv6=$addr6 | MAC=$mac")
                         return
                     }
@@ -234,6 +248,8 @@ object ZeroTierService {
         started = false
         currentNetworkId = 0L
         currentNetworkIdHex = ""
+        cachedIPv4 = null
+        cachedIPv6 = null
         node = null  // 置空，确保下次 start() 创建新节点而非复用已 stop 的旧节点
         _status.value = Status.STOPPED
 
@@ -252,16 +268,12 @@ object ZeroTierService {
 
     fun getNetworkAddress(): String? {
         if (currentNetworkId == 0L || !nativeLibLoaded) return null
-        return try {
-            runOnZtThread { node?.getIPv4Address(currentNetworkId)?.hostAddress }
-        } catch (_: Throwable) { null }
+        return cachedIPv4
     }
 
     fun get6PlaneAddress(): String? {
         if (currentNetworkId == 0L || !nativeLibLoaded) return null
-        return try {
-            runOnZtThread { node?.getIPv6Address(currentNetworkId)?.hostAddress }
-        } catch (_: Throwable) { null }
+        return cachedIPv6
     }
 
     fun createSocket(): Int {
@@ -302,4 +314,5 @@ object ZeroTierService {
         }
     }
 }
+
 
