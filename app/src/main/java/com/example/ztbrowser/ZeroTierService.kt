@@ -240,7 +240,7 @@ object ZeroTierService {
         if (shouldCleanup) {
             ztHandler.post {
                 try {
-                    curNode.leave(nwid)
+                    curNode!!.leave(nwid)
                     curNode.stop()
                     log("I", "ZeroTier stopped")
                 } catch (e: Throwable) {
