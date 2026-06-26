@@ -148,7 +148,7 @@ class ZTProxyServer(
         var off = offset
         while (remaining > 0) {
             val n = input.read(buf, off, remaining)
-            if (n < 0) return false // EOF
+            if (n <= 0) return false // EOF 或异常（read 不应返回 0，但防御处理）
             off += n
             remaining -= n
         }
@@ -345,35 +345,26 @@ class ZTProxyServer(
      */
     @Throws(Exception::class)
     private fun createSocketFromFd(fd: Int): Socket {
-        // 使用 java.io.FileDescriptor 和反射构造 Socket
+        // 构造 FileDescriptor 并注入 native fd
         val fileDescriptor = java.io.FileDescriptor::class.java.getDeclaredConstructor().apply {
             isAccessible = true
         }.newInstance()
 
-        // 通过反射设置 fd 字段
         val fdField = java.io.FileDescriptor::class.java.getDeclaredField("fd").apply {
             isAccessible = true
         }
         fdField.setInt(fileDescriptor, fd)
 
-        // 构造 SocketImpl
+        // 构造 PlainSocketImpl(FileDescriptor)
         val socketImplClass = Class.forName("java.net.PlainSocketImpl")
         val socketImpl = socketImplClass.getDeclaredConstructor(java.io.FileDescriptor::class.java).apply {
             isAccessible = true
         }.newInstance(fileDescriptor)
 
-        // Use reflection to access protected Socket(SocketImpl) constructor
+        // 通过 protected Socket(SocketImpl) 构造 Socket 并注入正确的 impl
         val socketCtor = Socket::class.java.getDeclaredConstructor(java.net.SocketImpl::class.java)
         socketCtor.isAccessible = true
-        val socket = socketCtor.newInstance(socketImplClass.getDeclaredConstructor().apply {
-            isAccessible = true
-        }.newInstance() as java.net.SocketImpl) ?: throw Exception("Failed to create Socket from fd")
-
-        // 替换 socketImpl
-        val implField = Socket::class.java.getDeclaredField("impl").apply {
-            isAccessible = true
-        }
-        implField.set(socket, socketImpl)
+        val socket = socketCtor.newInstance(socketImpl)
 
         return socket
     }
@@ -384,3 +375,4 @@ class ZTProxyServer(
         return socket
     }
 }
+
