@@ -204,16 +204,16 @@ object ZeroTierService {
             log("I", "ZeroTierNode created")
         }
 
-        val ztDir = File(context.filesDir, ZT_HOME_DIR).apply { mkdirs() }
+        // 每次启动前清除上次可能残留的损坏 ZeroTier 数据目录
+        val ztDir = File(context.filesDir, ZT_HOME_DIR)
+        ztDir.deleteRecursively()
+        ztDir.mkdirs()
         val planetPath = File(ztDir, PLANET_FILE).absolutePath
         log("D", "ZT dir: ${ztDir.absolutePath}")
 
-        if (!File(planetPath).exists()) {
-            log("I", "Planet not found, copying from assets")
-            copyPlanetFromAssets(context, planetPath)
-        } else {
-            log("D", "Planet exists")
-        }
+        // 强制从 assets 复制 planet（确保干净状态）
+        log("I", "Copying planet from assets")
+        copyPlanetFromAssets(context, planetPath)
 
         log("D", "Calling initFromStorage...")
         val initResult = node!!.initFromStorage(ztDir.absolutePath)
@@ -233,7 +233,7 @@ object ZeroTierService {
 
         val nwid = networkId.toLong(16)
         log("D", "Calling node.join($networkId)...")
-        val joinResult = node!!.join(nwid)
+        val joinResult = node!!.join(networkId)
         log("I", "node.join returned: $joinResult")
         if (joinResult != 0) {
             // 不要调用 node.stop() —— 原生层可能崩溃
