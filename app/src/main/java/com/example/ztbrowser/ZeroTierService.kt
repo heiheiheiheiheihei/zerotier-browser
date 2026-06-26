@@ -236,7 +236,9 @@ object ZeroTierService {
         val joinResult = node!!.join(nwid)
         log("I", "node.join returned: $joinResult")
         if (joinResult != 0) {
-            node!!.stop()
+            // 不要调用 node.stop() —— 原生层可能崩溃
+            log("E", "node.join failed with code $joinResult, abandoning node")
+            node = null
             _status.value = Status.OFFLINE
             return
         }
