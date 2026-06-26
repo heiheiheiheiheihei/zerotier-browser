@@ -44,6 +44,10 @@ class MainActivity : AppCompatActivity() {
         // 先加载配置，再初始化 proxyServer
         loadConfig()
 
+        // 初始化持久化日志并自动复制到剪贴板（闪退后可粘贴反馈）
+        ZeroTierService.setupFileLogging(this)
+        copyLogToClipboardOnStart()
+
         proxyServer = ZTProxyServer(port = 1080, ztSubnets = ztSubnets)
 
         setupWebView()
@@ -218,6 +222,15 @@ class MainActivity : AppCompatActivity() {
         ZeroTierService.stop()
     }
 
+    private fun copyLogToClipboardOnStart() {
+        try {
+            val log = ZeroTierService.getLog()
+            val clipboard = getSystemService(ClipboardManager::class.java)
+            clipboard.setPrimaryClip(ClipData.newPlainText("ZeroTier Log", log))
+            // 静默复制，不弹 Toast（启动时避免干扰用户）
+        } catch (_: Exception) { }
+    }
+
     private fun copyLogToClipboard() {
         try {
             val log = ZeroTierService.getLog()
@@ -261,5 +274,6 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 }
+
 
 
