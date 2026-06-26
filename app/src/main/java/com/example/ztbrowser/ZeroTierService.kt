@@ -50,9 +50,11 @@ object ZeroTierService {
     fun setupFileLogging(context: Context) {
         val ztDir = File(context.filesDir, ZT_HOME_DIR).apply { mkdirs() }
         val file = File(ztDir, "zt_log.txt")
+        // 保留上次日志作为备份（崩溃日志不丢失）
+        File(ztDir, "zt_log.prev.txt").delete()
+        if (file.exists()) file.renameTo(File(ztDir, "zt_log.prev.txt"))
         logFilePath = file.absolutePath
         logFileWriter = PrintWriter(file, "UTF-8").apply {
-            // 在文件头写入一条启动标记
             val ts = logDateFormat.format(Date())
             write("[$ts] [I] === App started ===\n")
             flush()
@@ -80,7 +82,7 @@ object ZeroTierService {
     private var currentNetworkIdHex: String = ""
     private var pollRunnable: Runnable? = null
 
-    private fun log(level: String, msg: String, throwable: Throwable? = null) {
+    internal fun log(level: String, msg: String, throwable: Throwable? = null) {
         val timestamp = logDateFormat.format(Date())
         val line = "[$timestamp] [$level] $msg"
         when (level) {
@@ -117,8 +119,12 @@ object ZeroTierService {
         if (memLog.isNotEmpty()) return header + memLog
 
         logFilePath?.let { path ->
-            val file = File(path)
-            if (file.exists()) return header + file.readText()
+            val curFile = File(path)
+            val prevFile = File(path).resolveSibling("zt_log.prev.txt")
+            val parts = mutableListOf<String>()
+            if (prevFile.exists()) parts.add("=== Previous run (crashed?) ===\n" + prevFile.readText())
+            if (curFile.exists()) parts.add(curFile.readText())
+            if (parts.isNotEmpty()) return header + parts.joinToString("\n")
         }
         return header
     }
@@ -348,6 +354,7 @@ object ZeroTierService {
         }
     }
 }
+
 
 
 
