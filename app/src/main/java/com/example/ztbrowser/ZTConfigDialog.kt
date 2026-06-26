@@ -1,6 +1,8 @@
 package com.example.ztbrowser
 
 import android.app.Dialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.text.InputType
 import android.view.ViewGroup
@@ -13,6 +15,7 @@ import com.google.android.material.textfield.TextInputLayout
  * 修复记录：
  * - [FIX#15] 使用闭包引用 Dialog 对象，不再依赖 parent.parent.parent
  * - [FIX#16] Network ID 增加十六进制校验
+ * - [FIX#17] 添加"复制运行日志"按钮，方便用户反馈问题时提供日志
  */
 class ZTConfigDialog(
     private val context: Context,
@@ -89,9 +92,32 @@ class ZTConfigDialog(
             """.trimIndent()
             textSize = 13f
             setTextColor(0xFF666666.toInt())
-            setPadding(0, 0, 0, 20)
+            setPadding(0, 0, 0, 12)
         }
         layout.addView(hintText)
+
+        // 复制日志按钮（独立一行，醒目）
+        val copyLogBtn = MaterialButton(context).apply {
+            text = "📋 复制运行日志"
+            textSize = 13f
+            setBackgroundColor(0xFFE8EAF6.toInt())
+            setTextColor(0xFF1A237E.toInt())
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setPadding(0, 0, 0, 20) }
+            setOnClickListener {
+                try {
+                    val log = ZeroTierService.getLog()
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("ZeroTier Log", log))
+                    Toast.makeText(context, "日志已复制到剪贴板（${log.length} 字符）", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(context, "复制失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        layout.addView(copyLogBtn)
 
         // 按钮行
         val buttonRow = LinearLayout(context).apply {
