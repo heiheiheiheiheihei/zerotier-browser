@@ -1,5 +1,7 @@
 package com.example.ztbrowser
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.net.Uri
 import android.os.Bundle
 import android.view.KeyEvent
@@ -128,6 +130,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnRefresh.setOnClickListener { webView.reload() }
         binding.btnHome.setOnClickListener { webView.loadUrl("about:blank") }
         binding.btnSettings.setOnClickListener { showConfigDialog() }
+        binding.btnCopyLog.setOnClickListener { copyLogToClipboard() }
         binding.ztStatusIndicator.setOnClickListener { showConfigDialog() }
     }
 
@@ -215,6 +218,17 @@ class MainActivity : AppCompatActivity() {
         ZeroTierService.stop()
     }
 
+    private fun copyLogToClipboard() {
+        try {
+            val log = ZeroTierService.getLog()
+            val clipboard = getSystemService(ClipboardManager::class.java)
+            clipboard.setPrimaryClip(ClipData.newPlainText("ZeroTier Log", log))
+            Toast.makeText(this, "日志已复制 (${log.length} 字符)", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "复制失败: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     // [FIX#13] 增加空值防护
     private fun loadConfig() {
         val prefs = getSharedPreferences("zt_browser", MODE_PRIVATE)
@@ -247,4 +261,5 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 }
+
 
