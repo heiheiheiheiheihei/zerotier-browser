@@ -12,21 +12,15 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 
 /**
  * ZeroTier 应用层服务 - 使用 libzt 在进程内运行 ZeroTier 协议栈
  *
- * 关键点：
- * 1. 不使用 Android VpnService，不影响系统 VPN 通道
- * 2. libzt 在应用进程内运行，仅本应用可见
- * 3. 其他应用的网络完全不受影响
- *
  * 修复记录：
- * - [FIX#1] 添加 System.loadLibrary("zt") 初始化 JNI
- * - [FIX#2] 使用类级别 scope 管理协程，避免泄漏
- * - [FIX#3] 添加 Network ID 合法性校验（16位十六进制）
- * - [FIX#11] 使用 libzt AAR 自带的 ZeroTierNode/ZeroTierNative 替代自定义 external fun
- * - [FIX#12] 添加内存日志缓冲区，支持复制运行日志用于问题反馈
+ * - [FIX#11] 使用 libzt AAR 自带类替代自定义 JNI
+ * - [FIX#12] 添加内存日志缓冲区
+ * - [FIX#13] 使用专用单线程 Dispatcher 确保 libzt 所有调用在同线程（libzt 不线程安全）
  */
 object ZeroTierService {
 
@@ -35,12 +29,18 @@ object ZeroTierService {
     private const val PLANET_FILE = "planet"
     private const val MAX_LOG_ENTRIES = 200
 
+    // [FIX#13] 专用单线程 Dispatcher：libzt 要求所有调用在同线程
+    private val ztDispatcher = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "ZeroTier-main").apply { isDaemon = true }
+    }.asCoroutineDispatcher()
+
+    // [FIX#13] 延迟初始化 node，确保在 ZT 线程创建
+    @Volatile
+    private var node: ZeroTierNode? = null
+
     // 标记 native 库是否加载成功
     @Volatile
     private var nativeLibLoaded = false
-
-    // libzt 节点封装（内部调用 com.zerotier.sockets.ZeroTierNative）
-    private val node = ZeroTierNode()
 
     // 内存日志缓冲区
     private val logBuffer = mutableListOf<String>()
@@ -64,42 +64,33 @@ object ZeroTierService {
     private val _status = MutableStateFlow(Status.STOPPED)
     val status: StateFlow<Status> = _status.asStateFlow()
 
-    // [FIX#2] 类级 scope，在 stop 时 cancel 并重建
     private var scope: CoroutineScope? = null
     private var started = false
     private var currentNetworkId: Long = 0L
+    private var currentNetworkIdHex: String = ""
 
-    /**
-     * 写入日志（同时输出到 Logcat 和内存缓冲区）
-     */
     private fun log(level: String, msg: String, throwable: Throwable? = null) {
         val timestamp = logDateFormat.format(Date())
         val line = "[$timestamp] [$level] $msg"
-        
-        // 写入 Logcat
+
         when (level) {
             "E" -> Log.e(TAG, msg, throwable)
             "W" -> Log.w(TAG, msg, throwable)
             "I" -> Log.i(TAG, msg, throwable)
             "D" -> Log.d(TAG, msg, throwable)
         }
-        
-        // 写入缓冲区
+
         synchronized(logBuffer) {
             logBuffer.add(line)
             if (throwable != null) {
                 logBuffer.add("[$timestamp] [$level]   ${throwable.stackTraceToString()}")
             }
-            // 限制最大行数
             while (logBuffer.size > MAX_LOG_ENTRIES) {
                 logBuffer.removeAt(0)
             }
         }
     }
 
-    /**
-     * 获取所有缓存的运行日志
-     */
     fun getLog(): String {
         val deviceInfo = "Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} | " +
                 "Android: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT}) | " +
@@ -110,9 +101,6 @@ object ZeroTierService {
         }
     }
 
-    /**
-     * 校验 Network ID 格式
-     */
     fun isValidNetworkId(id: String): Boolean {
         if (id.length != 16) return false
         return try {
@@ -123,90 +111,124 @@ object ZeroTierService {
         }
     }
 
+    /**
+     * 初始化并启动 ZeroTier 协议栈
+     * 所有 libzt 调用都在 ztDispatcher 单线程中执行
+     */
     fun start(context: Context, networkId: String): Result<Unit> {
-        if (started) return Result.success(Unit)
+        if (started) {
+            log("D", "Already started, skipping")
+            return Result.success(Unit)
+        }
 
         return try {
             if (!nativeLibLoaded) {
-                log("E", "Cannot start: libzt native library not loaded")
-                return Result.failure(IllegalStateException("libzt native library not loaded. Cannot start ZeroTier."))
+                log("E", "Cannot start: libzt not loaded")
+                return Result.failure(IllegalStateException("libzt native library not loaded"))
             }
             if (!isValidNetworkId(networkId)) {
                 log("E", "Invalid Network ID: '$networkId'")
-                return Result.failure(IllegalArgumentException("Invalid Network ID: 16 hex chars required"))
+                return Result.failure(IllegalArgumentException("Invalid Network ID"))
             }
 
-            log("I", "Starting ZeroTier... network=$networkId")
-            _status.value = Status.CONNECTING
-
-            val ztDir = File(context.filesDir, ZT_HOME_DIR).apply { mkdirs() }
-            val planetPath = File(ztDir, PLANET_FILE).absolutePath
-
-            if (!File(planetPath).exists()) {
-                log("I", "Planet file not found, copying from assets")
-                copyPlanetFromAssets(context, planetPath)
-            } else {
-                log("D", "Planet file exists at $planetPath")
+            // [FIX#13] 使用 runBlocking 桥接，确保整个启动流程在 ZT 线程
+            runBlocking(ztDispatcher) {
+                startInternal(context, networkId)
             }
-
-            val initResult = node.initFromStorage(ztDir.absolutePath)
-            if (initResult != 0) {
-                log("E", "zts_init_from_storage failed: code=$initResult")
-                _status.value = Status.OFFLINE
-                return Result.failure(Exception("ZeroTier init failed: code $initResult"))
-            }
-            log("I", "initFromStorage OK, path=${ztDir.absolutePath}")
-
-            val startResult = node.start()
-            if (startResult != 0) {
-                log("E", "zts_node_start failed: code=$startResult")
-                _status.value = Status.OFFLINE
-                return Result.failure(Exception("ZeroTier start failed: code $startResult"))
-            }
-            log("I", "node.start() OK")
-
-            val nwid = networkId.toLong(16)
-            val joinResult = node.join(nwid)
-            if (joinResult != 0) {
-                log("E", "zts_net_join failed: code=$joinResult")
-                node.stop()
-                _status.value = Status.OFFLINE
-                return Result.failure(Exception("Failed to join network: code $joinResult"))
-            }
-            log("I", "node.join($networkId) OK")
-
-            currentNetworkId = nwid
-            started = true
-
-            scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-            scope?.launch {
-                waitForOnline(nwid)
-            }
-
-            Result.success(Unit)
         } catch (e: Throwable) {
-            log("E", "ZeroTier start crashed: ${e.javaClass.simpleName}: ${e.message}", e)
+            log("E", "ZeroTier start exception: ${e.javaClass.simpleName}: ${e.message}", e)
             _status.value = Status.OFFLINE
-            Result.failure(Exception("ZeroTier start failed: ${e.javaClass.simpleName}: ${e.message}"))
+            Result.failure(Exception("ZeroTier start: ${e.javaClass.simpleName}: ${e.message}"))
         }
     }
 
+    private suspend fun startInternal(context: Context, networkId: String): Result<Unit> {
+        _status.value = Status.CONNECTING
+        log("I", "Starting ZeroTier... network=$networkId device=${android.os.Build.MODEL}")
+
+        // [FIX#13] 在 ZT 线程创建 node
+        if (node == null) {
+            node = ZeroTierNode()
+            log("I", "ZeroTierNode created")
+        }
+
+        val ztDir = File(context.filesDir, ZT_HOME_DIR).apply { mkdirs() }
+        val planetPath = File(ztDir, PLANET_FILE).absolutePath
+
+        val hasPlanet = File(planetPath).exists()
+        if (!hasPlanet) {
+            log("I", "Planet file not found, copying from assets")
+            copyPlanetFromAssets(context, planetPath)
+        } else {
+            log("D", "Planet exists at $planetPath")
+        }
+
+        // initFromStorage
+        val initResult = node!!.initFromStorage(ztDir.absolutePath)
+        if (initResult != 0) {
+            log("E", "initFromStorage failed: code=$initResult path=${ztDir.absolutePath}")
+            _status.value = Status.OFFLINE
+            return Result.failure(Exception("ZeroTier init failed: code $initResult"))
+        }
+        log("I", "initFromStorage OK")
+
+        // node start
+        val startResult = node!!.start()
+        if (startResult != 0) {
+            log("E", "node.start failed: code=$startResult")
+            _status.value = Status.OFFLINE
+            return Result.failure(Exception("ZeroTier start failed: code $startResult"))
+        }
+        log("I", "node.start OK")
+
+        // join network
+        val nwid = networkId.toLong(16)
+        val joinResult = node!!.join(nwid)
+        if (joinResult != 0) {
+            log("E", "node.join failed: code=$joinResult network=$networkId")
+            node!!.stop()
+            _status.value = Status.OFFLINE
+            return Result.failure(Exception("Failed to join network: code $joinResult"))
+        }
+        log("I", "node.join($networkId) OK, waiting for online...")
+
+        currentNetworkId = nwid
+        currentNetworkIdHex = networkId
+        started = true
+
+        // 启动等待上线的协程（在 ZT 线程中轮询）
+        scope = CoroutineScope(ztDispatcher + SupervisorJob())
+        scope?.launch {
+            waitForOnline(nwid)
+        }
+
+        Result.success(Unit)
+    }
+
     private suspend fun waitForOnline(nwid: Long) {
-        log("I", "Waiting for ZeroTier to go online (30s timeout)...")
+        log("I", "Waiting for ZeroTier online (30s timeout)...")
         var retries = 30
+        var lastError: String? = null
         while (retries > 0 && isActive()) {
-            if (node.isOnline()) {
-                _status.value = Status.ONLINE
-                val addr = node.getIPv4Address(nwid)?.hostAddress ?: "unknown"
-                val addr6 = node.getIPv6Address(nwid)?.hostAddress ?: ""
-                log("I", "ZeroTier ONLINE: IPv4=$addr IPv6=$addr6")
-                return
+            try {
+                val online = node?.isOnline() ?: false
+                if (online) {
+                    _status.value = Status.ONLINE
+                    val addr = node?.getIPv4Address(nwid)?.hostAddress ?: "unknown"
+                    val addr6 = node?.getIPv6Address(nwid)?.hostAddress ?: ""
+                    val mac = node?.getMACAddress(nwid) ?: ""
+                    log("I", "ZeroTier ONLINE | IPv4=$addr | IPv6=$addr6 | MAC=$mac")
+                    return
+                }
+            } catch (e: Throwable) {
+                lastError = e.message
+                log("D", "isOnline check: ${e.message}")
             }
             delay(1000)
             retries--
         }
         if (isActive()) {
-            log("W", "ZeroTier connection timeout after 30s")
+            log("W", "Connection timeout (30s). lastError=$lastError")
             _status.value = Status.OFFLINE
         }
     }
@@ -214,17 +236,22 @@ object ZeroTierService {
     fun stop() {
         if (!started) return
         log("I", "Stopping ZeroTier...")
-        if (nativeLibLoaded) {
-            try {
-                node.leave(currentNetworkId)
-                node.stop()
-                log("I", "ZeroTier stopped")
-            } catch (e: Throwable) {
-                log("E", "Error stopping ZeroTier", e)
-            }
-        }
+        
         scope?.cancel()
         scope = null
+
+        if (nativeLibLoaded) {
+            runBlocking(ztDispatcher) {
+                try {
+                    node?.leave(currentNetworkId)
+                    node?.stop()
+                    log("I", "ZeroTier stopped")
+                } catch (e: Throwable) {
+                    log("E", "Error stopping ZeroTier", e)
+                }
+            }
+        }
+
         started = false
         currentNetworkId = 0L
         _status.value = Status.STOPPED
@@ -235,7 +262,9 @@ object ZeroTierService {
     fun getNetworkAddress(): String? {
         if (currentNetworkId == 0L || !nativeLibLoaded) return null
         return try {
-            node.getIPv4Address(currentNetworkId)?.hostAddress
+            runBlocking(ztDispatcher) {
+                node?.getIPv4Address(currentNetworkId)?.hostAddress
+            }
         } catch (e: Throwable) {
             null
         }
@@ -244,25 +273,51 @@ object ZeroTierService {
     fun get6PlaneAddress(): String? {
         if (currentNetworkId == 0L || !nativeLibLoaded) return null
         return try {
-            node.getIPv6Address(currentNetworkId)?.hostAddress
+            runBlocking(ztDispatcher) {
+                node?.getIPv6Address(currentNetworkId)?.hostAddress
+            }
         } catch (e: Throwable) {
             null
         }
     }
 
+    /**
+     * 创建 ZeroTier 原生 socket（用于 ZT 子网内连接）
+     */
     fun createSocket(): Int {
         if (!nativeLibLoaded) return -1
-        return ZeroTierNative.zts_bsd_socket(2, 1, 0)
+        return try {
+            runBlocking(ztDispatcher) {
+                ZeroTierNative.zts_bsd_socket(2, 1, 0)
+            }
+        } catch (e: Throwable) {
+            log("E", "createSocket failed", e)
+            -1
+        }
     }
 
     fun connectSocket(fd: Int, host: String, port: Int): Int {
         if (!nativeLibLoaded) return -1
-        return ZeroTierNative.zts_connect(fd, host, port, 0)
+        return try {
+            runBlocking(ztDispatcher) {
+                ZeroTierNative.zts_connect(fd, host, port, 0)
+            }
+        } catch (e: Throwable) {
+            log("E", "connectSocket failed: fd=$fd host=$host:$port", e)
+            -1
+        }
     }
 
     fun closeSocket(fd: Int): Int {
         if (!nativeLibLoaded) return -1
-        return ZeroTierNative.zts_bsd_close(fd)
+        return try {
+            runBlocking(ztDispatcher) {
+                ZeroTierNative.zts_bsd_close(fd)
+            }
+        } catch (e: Throwable) {
+            log("E", "closeSocket failed: fd=$fd", e)
+            -1
+        }
     }
 
     private fun copyPlanetFromAssets(context: Context, destPath: String) {
@@ -274,7 +329,7 @@ object ZeroTierService {
             }
             log("I", "Planet file copied from assets")
         } catch (e: Exception) {
-            log("W", "No bundled planet file, using default root servers")
+            log("W", "No planet in assets, using default root servers")
         }
     }
 }
