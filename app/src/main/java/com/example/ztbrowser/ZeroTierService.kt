@@ -27,12 +27,18 @@ object ZeroTierService {
     private const val ZT_HOME_DIR = "zerotier"
     private const val PLANET_FILE = "planet"
 
+    // 标记 native 库是否加载成功
+    @Volatile
+    private var nativeLibLoaded = false
+
     init {
         try {
             System.loadLibrary("zt")
+            nativeLibLoaded = true
+            Log.i(TAG, "libzt native library loaded successfully")
         } catch (e: UnsatisfiedLinkError) {
-            Log.e(TAG, "Failed to load libzt native library", e)
-            // 不抛异常，让调用方通过 start() 的返回值得知失败
+            nativeLibLoaded = false
+            Log.e(TAG, "Failed to load libzt native library. ZT functions unavailable.", e)
         }
     }
 
@@ -80,6 +86,9 @@ object ZeroTierService {
         if (started) return Result.success(Unit)
 
         return try {
+            if (!nativeLibLoaded) {
+                return Result.failure(IllegalStateException("libzt native library not loaded. Cannot start ZeroTier."))
+            }
             // [FIX#3] 先校验 Network ID
             if (!isValidNetworkId(networkId)) {
                 return Result.failure(IllegalArgumentException("Invalid Network ID: 16 hex chars required"))
@@ -120,9 +129,10 @@ object ZeroTierService {
 
             Log.i(TAG, "ZeroTier started, joining network $networkId")
             Result.success(Unit)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             _status.value = Status.OFFLINE
-            Result.failure(e)
+            Log.e(TAG, "ZeroTier start crashed", e)
+            Result.failure(Exception("ZeroTier start failed: ${e.javaClass.simpleName}: ${e.message}"))
         }
     }
 
@@ -146,11 +156,13 @@ object ZeroTierService {
 
     fun stop() {
         if (!started) return
-        try {
-            zts_leave(currentNetworkId)
-            zts_stop()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping ZeroTier", e)
+        if (nativeLibLoaded) {
+            try {
+                zts_leave(currentNetworkId)
+                zts_stop()
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error stopping ZeroTier", e)
+            }
         }
         scope?.cancel()
         scope = null
@@ -162,32 +174,35 @@ object ZeroTierService {
     private fun isActive(): Boolean = scope?.isActive == true
 
     fun getNetworkAddress(): String? {
-        if (currentNetworkId == 0L) return null
+        if (currentNetworkId == 0L || !nativeLibLoaded) return null
         return try {
             zts_get_address(currentNetworkId)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             null
         }
     }
 
     fun get6PlaneAddress(): String? {
-        if (currentNetworkId == 0L) return null
+        if (currentNetworkId == 0L || !nativeLibLoaded) return null
         return try {
             zts_get_6plane_addr(currentNetworkId)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             null
         }
     }
 
     fun createSocket(): Int {
+        if (!nativeLibLoaded) return -1
         return zts_socket(2, 1, 0)
     }
 
     fun connectSocket(fd: Int, host: String, port: Int): Int {
+        if (!nativeLibLoaded) return -1
         return zts_connect(fd, host, port)
     }
 
     fun closeSocket(fd: Int): Int {
+        if (!nativeLibLoaded) return -1
         return zts_close(fd)
     }
 
