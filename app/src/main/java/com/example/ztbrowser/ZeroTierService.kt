@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -40,6 +42,23 @@ object ZeroTierService {
 
     private val logBuffer = mutableListOf<String>()
     private val logDateFormat = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.getDefault())
+
+    // 文件日志持久化（闪退后日志不丢失）
+    private var logFileWriter: PrintWriter? = null
+    @Volatile
+    private var logFilePath: String? = null
+
+    fun setupFileLogging(context: Context) {
+        val ztDir = File(context.filesDir, ZT_HOME_DIR).apply { mkdirs() }
+        val file = File(ztDir, "zt_log.txt")
+        logFilePath = file.absolutePath
+        logFileWriter = PrintWriter(file, "UTF-8").apply {
+            // 在文件头写入一条启动标记
+            val ts = logDateFormat.format(Date())
+            write("[$ts] [I] === App started (ZT Browser v${BuildConfig.VERSION_NAME}) ===\n")
+            flush()
+        }
+    }
 
     init {
         try {
@@ -78,15 +97,31 @@ object ZeroTierService {
             }
             while (logBuffer.size > MAX_LOG_ENTRIES) logBuffer.removeAt(0)
         }
+        // 同步写入持久化日志文件（每条立即刷盘，闪退不丢）
+        logFileWriter?.let { w ->
+            synchronized(w) {
+                w.write(line + "\n")
+                if (throwable != null) w.write("[$timestamp] [$level]   ${throwable.stackTraceToString()}\n")
+                w.flush()
+            }
+        }
     }
 
     fun getLog(): String {
         val deviceInfo = "Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} | " +
                 "Android: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT}) | " +
                 "Arch: ${android.os.Build.SUPPORTED_ABIS.joinToString(",")}"
-        return synchronized(logBuffer) {
-            "=== ZeroTier Browser Log ===\n$deviceInfo\n\n" + logBuffer.joinToString("\n")
+        val header = "=== ZeroTier Browser Log ===\n$deviceInfo\n\n"
+
+        // 优先从内存缓冲区取（当前进程日志）；若缓冲区为空则从持久化文件恢复（上次崩溃日志）
+        val memLog = synchronized(logBuffer) { logBuffer.joinToString("\n") }
+        if (memLog.isNotEmpty()) return header + memLog
+
+        logFilePath?.let { path ->
+            val file = File(path)
+            if (file.exists()) return header + file.readText()
         }
+        return header
     }
 
     fun isValidNetworkId(id: String): Boolean {
@@ -314,5 +349,6 @@ object ZeroTierService {
         }
     }
 }
+
 
 
