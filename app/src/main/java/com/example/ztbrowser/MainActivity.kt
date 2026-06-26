@@ -187,16 +187,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startZeroTier() {
-        // [FIX#11] proxyServer 的 start() 内部已处理 scope 重建
-        // startZeroTier 先确保 proxy 已就绪（创建 socket 在 ZT online 前也可）
         proxyServer.start()
-
-        val result = ZeroTierService.start(this, ztNetworkId)
-        result.onSuccess {
-            Toast.makeText(this, "ZeroTier 启动中...", Toast.LENGTH_SHORT).show()
-        }.onFailure { e ->
-            Toast.makeText(this, "ZeroTier 启动失败: ${e.message}", Toast.LENGTH_LONG).show()
-        }
+        ZeroTierService.start(this, ztNetworkId)
+        Toast.makeText(this, "ZeroTier 启动中...", Toast.LENGTH_SHORT).show()
     }
 
     private fun showConfigDialog() {
@@ -254,3 +247,4 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 }
+
