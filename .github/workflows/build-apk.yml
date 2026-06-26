@@ -18,10 +18,10 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android SDK
+      - name: Setup Android SDK & NDK
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-34 ndk;27.0.12077973 cmake;3.22.1'
+          packages: 'platforms;android-34 ndk;26.3.11579264 cmake;3.22.1'
 
       - name: Clone libzt
         run: |
@@ -29,47 +29,35 @@ jobs:
           cd libzt
           git submodule update --init --recursive
 
-      - name: Build libzt for Android
-        working-directory: libzt
-        run: |
-          export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973
-          export ANDROID_SDK_ROOT=$ANDROID_HOME
-          make android || echo "LIBZT_BUILD_FAILED=true" >> $GITHUB_ENV
-
-      - name: Collect libzt .so files
+      - name: Build libzt Android AAR
         id: build
         working-directory: libzt
         run: |
-          AAR_DIR="libzt-aar-temp"
-          rm -rf $AAR_DIR
-          mkdir -p $AAR_DIR/jni/arm64-v8a
-          mkdir -p $AAR_DIR/jni/armeabi-v7a
-          mkdir -p $AAR_DIR/jni/x86_64
+          export ANDROID_HOME=$ANDROID_SDK_ROOT
+          export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.3.11579264
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          echo "NDK contents:"
+          ls "$ANDROID_NDK_HOME" | head -5
+          echo "Toolchain file:"
+          ls "$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" 2>/dev/null && echo "Found" || echo "Not found"
 
-          SO_COUNT=0
-          find . -name "libzt.so" | while read f; do
-            case "$f" in
-              *arm64-v8a*) cp "$f" "$AAR_DIR/jni/arm64-v8a/" ; SO_COUNT=$((SO_COUNT+1)) ;;
-              *armeabi-v7a*) cp "$f" "$AAR_DIR/jni/armeabi-v7a/" ; SO_COUNT=$((SO_COUNT+1)) ;;
-              *x86_64*) cp "$f" "$AAR_DIR/jni/x86_64/" ; SO_COUNT=$((SO_COUNT+1)) ;;
-            esac
-          done
-          echo "Found $SO_COUNT .so files"
+          ./build.sh android-aar "release" 2>&1
 
-          # Minimal manifest
-          printf '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.zerotier.libzt"></manifest>' > $AAR_DIR/AndroidManifest.xml
-
-          cd $AAR_DIR
-          zip -r ../libzt.aar . || true
-          cd ..
-          rm -rf $AAR_DIR
-
-          if [ -f libzt.aar ]; then
+          AAR_PATH="dist/android-any-android-release/libzt-release.aar"
+          if [ -f "$AAR_PATH" ]; then
+            cp "$AAR_PATH" ../libzt.aar
             echo "aar-available=true" >> $GITHUB_OUTPUT
-            echo "libzt.aar created successfully"
+            echo "=== libzt-release.aar created successfully ==="
+            echo "AAR contents:"
+            unzip -l ../libzt.aar | grep "\.so"
           else
             echo "aar-available=false" >> $GITHUB_OUTPUT
-            echo "libzt.aar creation failed"
+            echo "=== AAR not found at $AAR_PATH ==="
+            echo "dist directory:"
+            find dist -type f 2>/dev/null || echo "dist not found"
+            echo "Any AAR files:"
+            find . -name "*.aar" 2>/dev/null || echo "No AAR found"
           fi
 
       - name: Upload libzt.aar artifact
@@ -77,7 +65,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: libzt-aar
-          path: libzt/libzt.aar
+          path: libzt.aar
 
   build-apk:
     name: Build APK
@@ -103,11 +91,12 @@ jobs:
           mkdir -p app/libs
           if [ -f libzt.aar ]; then
             cp libzt.aar app/libs/
-            echo "Using real libzt.aar"
+            echo "=== Using REAL libzt.aar ==="
+            unzip -l app/libs/libzt.aar | grep "\.so"
           else
-            echo "Creating stub libzt.aar for build testing..."
+            echo "=== Creating stub libzt.aar (build will succeed but ZT won't work) ==="
             TMPDIR=$(mktemp -d)
-            printf '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.zerotier.libzt"></manifest>' > $TMPDIR/AndroidManifest.xml
+            printf '<manifest package="com.zerotier.libzt"/>' > $TMPDIR/AndroidManifest.xml
             cd $TMPDIR
             zip -r $GITHUB_WORKSPACE/app/libs/libzt.aar .
             cd $GITHUB_WORKSPACE
