@@ -233,7 +233,7 @@ object ZeroTierService {
 
         val nwid = networkId.toLong(16)
         log("D", "Calling node.join($networkId)...")
-        val joinResult = node!!.join(networkId)
+        val joinResult = node!!.join(nwid)
         log("I", "node.join returned: $joinResult")
         if (joinResult != 0) {
             // 不要调用 node.stop() —— 原生层可能崩溃
