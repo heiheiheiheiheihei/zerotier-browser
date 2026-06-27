@@ -41,17 +41,19 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // 先加载配置，再初始化 proxyServer
+        // 先加载配置，再初始化日志
         loadConfig()
-
-        // 初始化持久化日志并自动复制到剪贴板（闪退后可粘贴反馈）
         ZeroTierService.log("D", "onCreate: after loadConfig")
         ZeroTierService.setupFileLogging(this)
         ZeroTierService.log("D", "onCreate: after setupFileLogging")
-        copyLogToClipboardOnStart()
-        ZeroTierService.log("D", "onCreate: after copyLogToClipboardOnStart")
 
-        proxyServer = ZTProxyServer(port = 1080, ztSubnets = ztSubnets)
+        // 初始化 proxyServer（try-catch 防止构造函数中意外崩溃）
+        proxyServer = try {
+            ZTProxyServer(port = 1080, ztSubnets = ztSubnets)
+        } catch (e: Exception) {
+            ZeroTierService.log("E", "ZTProxyServer init failed", e)
+            ZTProxyServer(port = 1080, ztSubnets = emptyList())
+        }
         ZeroTierService.log("D", "onCreate: after ZTProxyServer init")
 
         setupWebView()
