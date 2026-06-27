@@ -98,12 +98,12 @@ class ZTWebViewClient(
         }
 
         try {
-            return executeRequest(client, request, method)
+            return executeRequest(client, request, method, useProxy)
         } catch (e: Exception) {
             ZeroTierService.log("W", "Request failed for $url: ${e.message}", e)
             if (useProxy) {
                 try {
-                    return executeRequest(directClient, request, method)
+                    return executeRequest(directClient, request, method, false)
                 } catch (_: Exception) {}
             }
             return null
@@ -113,7 +113,8 @@ class ZTWebViewClient(
     private fun executeRequest(
         client: OkHttpClient,
         request: WebResourceRequest,
-        method: String
+        method: String,
+        isZtRequest: Boolean
     ): WebResourceResponse? {
         val url = request.url.toString()
         val builder = Request.Builder().url(url)
@@ -158,7 +159,7 @@ class ZTWebViewClient(
             }
         }
         // [P2-8] CORS 放宽仅对 ZT 子网响应注入，避免影响公网页面逻辑
-        if (useProxy) {
+        if (isZtRequest) {
             responseHeaders["Access-Control-Allow-Origin"] = "*"
         }
 
