@@ -208,18 +208,32 @@ object ZeroTierService {
         _status.value = Status.CONNECTING
         log("I", "startInternal on ZT thread, network=$networkId")
 
-        // 每次启动前清除上次可能残留的损坏 ZeroTier 数据目录
-        // ⚠️ 必须在创建 ZeroTierNode 之前执行，否则节点可能持有已删除目录中的引用
+        // 选择性清理：删除可能损坏的缓存文件，但保留身份文件（避免 MAC 变化）
         val ztDir = File(context.filesDir, ZT_HOME_DIR)
-        ztDir.deleteRecursively()
         ztDir.mkdirs()
 
-        // 重建日志文件（deleteRecursively 会删掉它，导致后续 log() 写入孤儿 fd）
+        // 备份身份文件
+        val identityPublic = File(ztDir, "identity.public")
+        val identitySecret = File(ztDir, "identity.secret")
+        val savedPublic = identityPublic.takeIf { it.exists() }?.readBytes()
+        val savedSecret = identitySecret.takeIf { it.exists() }?.readBytes()
+
+        // 只删除可能损坏的缓存文件（保留身份）
+        val toDelete = listOf("planet", "peers.d", "moons.d", "networks.d")
+        for (name in toDelete) {
+            File(ztDir, name).let { if (it.exists()) it.deleteRecursively() }
+        }
+
+        // 恢复身份文件（保证下次启动 MAC 不变）
+        if (savedPublic != null) identityPublic.writeBytes(savedPublic)
+        if (savedSecret != null) identitySecret.writeBytes(savedSecret)
+
+        // 日志文件重置（deleteRecursively 可能删过 peers.d 等但没有删日志）
         logFilePath?.let { path ->
             try { logFileWriter?.close() } catch (_: Exception) {}
             logFileWriter = PrintWriter(File(path), "UTF-8")
         }
-        log("I", "ZT dir reset: ${ztDir.absolutePath}")
+        log("I", "ZT dir cleaned (identity preserved): ${ztDir.absolutePath}")
 
         log("D", "Creating ZeroTierNode...")
         val ztNode = ZeroTierNode()
