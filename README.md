@@ -129,6 +129,23 @@ zerotier-browser/
 
 ## 关键技术细节
 
+### ZeroTier 数据通道（v1.1.0 重写）
+
+libzt 在用户态运行 ZeroTier 协议栈，不创建内核可见虚拟网卡。浏览器流量经本地 SOCKS5 代理（127.0.0.1:1080）转发：
+
+- **直连路径**：系统 Socket，`java.net.Socket` 直接连接
+- **ZT 路径**：`zts_bsd_socket()` 创建用户态 fd，`zts_bsd_read()`/`zts_bsd_write()` 收发数据，与 SOCKS5 客户端手动桥接（无法通过 `java.net.Socket` 包装用户态 fd）
+
+### POST/PUT/PATCH Body 支持（v1.1.0）
+
+Android `shouldInterceptRequest` 平台限制无法获取请求体。解决方案：JS Bridge 劫持。
+
+- 页面加载时注入 `post_body_hook.js`，劫持 `fetch` 和 `XMLHttpRequest.prototype.send`
+- 请求发出前，JS 将 method/url/headers/body（Base64 编码）通过 `@JavascriptInterface` 传给 `RequestBodyCollector`
+- `shouldInterceptRequest` 时按 (method, url) 匹配取出 body，用 OkHttp 代理转发
+- 支持：string、ArrayBuffer、Uint8Array、URLSearchParams（上限 5MB）
+- 不支持：FormData、Blob（JS 侧无法同步序列化）
+
 ### 为什么不需要 VPN 权限？
 
 | 方案 | 原理 | 影响范围 |
