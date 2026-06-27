@@ -291,6 +291,7 @@ object ZeroTierService {
         log("I", "Starting online poll (60s timeout, waiting for real IP)...")
         val maxRetries = 60
         val retries = intArrayOf(0)
+        var lastDumpRetry = -1
 
         pollRunnable = object : Runnable {
             override fun run() {
@@ -301,7 +302,6 @@ object ZeroTierService {
                         val addr6 = node?.getIPv6Address(nwid)?.hostAddress ?: ""
                         val mac = node?.getMACAddress(nwid) ?: ""
 
-                        // 拒绝回环/零址 — ZT 网络不会分配 loopback 地址
                         val isRealAddr = addr != "unknown" &&
                             addr != "::1" && addr != "127.0.0.1" &&
                             !addr.startsWith("0.0.0.0") && !addr.startsWith("::0")
@@ -312,10 +312,16 @@ object ZeroTierService {
                             cachedIPv6 = addr6
                             log("I", "ONLINE | IPv4=$addr | IPv6=$addr6 | MAC=$mac")
                             return
-                        } else {
-                            if (retries[0] % 10 == 0) {
-                                log("D", "Waiting for IP assignment... (retry ${retries[0]}, got=$addr)")
-                            }
+                        }
+
+                        // 每 15 次 dump 一次完整的网络诊断信息
+                        if (retries[0] % 15 == 0 && retries[0] != lastDumpRetry) {
+                            lastDumpRetry = retries[0]
+                            dumpNetworkDiagnostics(nwid)
+                        }
+
+                        if (retries[0] % 10 == 0) {
+                            log("D", "Waiting for IP assignment... (retry ${retries[0]}, IPv4=$addr, IPv6=$addr6)")
                         }
                     }
                 } catch (e: Throwable) {
@@ -323,7 +329,8 @@ object ZeroTierService {
                 }
                 retries[0]++
                 if (retries[0] >= maxRetries) {
-                    log("W", "Connection timeout (60s) — node online but no IP assigned. Check network controller authorization.")
+                    log("W", "Connection timeout (60s) — node online but no IP assigned.")
+                    log("W", "Possible causes: 1) node not authorized on controller  2) network ID doesn't exist  3) controller unreachable")
                     _status.value = Status.OFFLINE
                 } else {
                     ztHandler.postDelayed(this, 1000)
@@ -331,6 +338,29 @@ object ZeroTierService {
             }
         }
         ztHandler.postDelayed(pollRunnable!!, 1000)
+    }
+
+    /** 诊断 dump：列出节点知道的所有网络信息 */
+    private fun dumpNetworkDiagnostics(nwid: Long) {
+        try {
+            val n = node ?: return
+            val online = n.isOnline()
+            val ipv4 = n.getIPv4Address(nwid)
+            val ipv6 = n.getIPv6Address(nwid)
+            val mac = n.getMACAddress(nwid)
+            log("D", "--- NETWORK DIAGNOSTIC (retry ${nwid}) ---")
+            log("D", "  isOnline()=$online")
+            log("D", "  getIPv4Address($nwid)=${ipv4} hostAddr=${ipv4?.hostAddress}")
+            log("D", "  getIPv6Address($nwid)=${ipv6} hostAddr=${ipv6?.hostAddress}")
+            log("D", "  getMACAddress($nwid)=$mac")
+            log("D", "  cachedIPv4=$cachedIPv4  cachedIPv6=$cachedIPv6")
+            // 尝试 toString / class 信息
+            log("D", "  IPv4 class=${ipv4?.javaClass?.name}  canonical=${ipv4?.canonicalHostName}")
+            log("D", "  IPv6 class=${ipv6?.javaClass?.name}  canonical=${ipv6?.canonicalHostName}")
+            log("D", "--------------------------------------------")
+        } catch (e: Throwable) {
+            log("D", "Diagnostic err: ${e.message}")
+        }
     }
 
     fun stop() {
