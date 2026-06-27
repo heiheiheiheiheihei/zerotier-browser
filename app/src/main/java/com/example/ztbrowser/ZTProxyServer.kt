@@ -1,6 +1,5 @@
 package com.example.ztbrowser
 
-import android.util.Log
 import kotlinx.coroutines.*
 import java.io.InputStream
 import java.io.OutputStream
@@ -34,7 +33,7 @@ class ZTProxyServer(
 
     fun start() {
         if (isActive) {
-            Log.w(TAG, "Proxy already running")
+            ZeroTierService.log("W", "Proxy already running")
             return
         }
 
@@ -45,7 +44,8 @@ class ZTProxyServer(
         scope?.launch {
             try {
                 serverSocket = ServerSocket(port, 50, InetAddress.getByName("127.0.0.1"))
-                Log.i(TAG, "SOCKS5 proxy started on 127.0.0.1:$port")
+                ZeroTierService.log("I", "SOCKS5 proxy started on 127.0.0.1:$port")
+                ZeroTierService.logUserAction("Proxy started (port=$port, subnets=$ztSubnets)")
 
                 while (isActive) {
                     val clientSocket = try {
@@ -64,7 +64,7 @@ class ZTProxyServer(
                 }
             } catch (e: Exception) {
                 if (isActive) {
-                    Log.e(TAG, "Proxy server error", e)
+                    ZeroTierService.log("E", "Proxy server error", e)
                 }
             }
         }
@@ -78,29 +78,33 @@ class ZTProxyServer(
         scope?.cancel()
         scope = null
         activeConnections.clear()
-        Log.i(TAG, "SOCKS5 proxy stopped")
+        ZeroTierService.log("I", "SOCKS5 proxy stopped")
     }
 
     private suspend fun handleConnection(connId: Int, clientSocket: Socket) =
         withContext(Dispatchers.IO) {
+            val clientAddr = "${clientSocket.inetAddress.hostAddress}:${clientSocket.port}"
+            ZeroTierService.log("D", "[$connId] New connection from $clientAddr")
             try {
                 clientSocket.soTimeout = 30_000
                 val input = clientSocket.getInputStream()
                 val output = clientSocket.getOutputStream()
 
                 if (!socks5Handshake(input, output)) {
+                    ZeroTierService.log("W", "[$connId] SOCKS5 handshake failed")
                     clientSocket.close()
                     return@withContext
                 }
+                ZeroTierService.log("D", "[$connId] SOCKS5 handshake OK")
 
                 val target = socks5ReadRequest(input, output) ?: run {
+                    ZeroTierService.log("W", "[$connId] SOCKS5 request parse failed")
                     clientSocket.close()
                     return@withContext
                 }
 
-                Log.d(TAG, "[$connId] Proxy request to ${target.host}:${target.port}")
-
                 val useZT = isInZTSubnet(target.host)
+                ZeroTierService.log("D", "[$connId] Target: ${target.host}:${target.port}, viaZT=$useZT, ZTstatus=${ZeroTierService.status.value}")
 
                 val remoteSocket: Socket = if (useZT && ZeroTierService.status.value == ZeroTierService.Status.ONLINE) {
                     connectViaZeroTier(target)
@@ -113,6 +117,9 @@ class ZTProxyServer(
 
                 val remoteInput = remoteSocket.getInputStream()
                 val remoteOutput = remoteSocket.getOutputStream()
+
+                val routeMethod = if (useZT) "ZeroTier" else "direct"
+                ZeroTierService.log("I", "[$connId] $routeMethod route → ${target.host}:${target.port}")
 
                 // 双向转发
                 coroutineScope {
@@ -131,8 +138,9 @@ class ZTProxyServer(
                     job2.invokeOnCompletion { job1.cancel() }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "[$connId] Connection error: ${e.message}")
+                ZeroTierService.log("W", "[$connId] Connection error: ${e.message}", e)
             } finally {
+                ZeroTierService.log("D", "[$connId] Connection closed")
                 try { clientSocket.close() } catch (_: Exception) {}
                 activeConnections.remove(connId)
             }
@@ -331,7 +339,7 @@ class ZTProxyServer(
             // 用 fd 构造 Socket（需要 Android 特有 API 或反射）
             createSocketFromFd(fd)
         } catch (e: Exception) {
-            Log.w(TAG, "libzt socket failed: ${e.message}, falling back to system socket")
+            ZeroTierService.log("W", "libzt socket failed: ${e.message}, falling back to system socket", e)
             // 降级：系统 socket（仅当 ZT 以 VPN 方式安装了路由时可用）
             val socket = Socket()
             socket.connect(InetSocketAddress(target.host, target.port), 10_000)

@@ -95,6 +95,7 @@ object ZeroTierService {
             "W" -> Log.w(TAG, msg, throwable)
             "I" -> Log.i(TAG, msg, throwable)
             "D" -> Log.d(TAG, msg, throwable)
+            "U" -> Log.i(TAG, "[USER] $msg", throwable)
         }
         synchronized(logBuffer) {
             logBuffer.add(line)
@@ -111,6 +112,11 @@ object ZeroTierService {
                 w.flush()
             }
         }
+    }
+
+    /** 记录用户操作（按钮点击、输入、导航等） */
+    fun logUserAction(action: String) {
+        log("U", action)
     }
 
     fun getLog(): String {

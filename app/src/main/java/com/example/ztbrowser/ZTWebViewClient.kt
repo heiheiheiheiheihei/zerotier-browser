@@ -3,7 +3,6 @@ package com.example.ztbrowser
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.http.SslError
-import android.util.Log
 import android.webkit.*
 import okhttp3.*
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -26,10 +25,6 @@ class ZTWebViewClient(
     private val context: Context,
     private val proxyPort: Int = 1080
 ) : WebViewClient() {
-
-    companion object {
-        private const val TAG = "ZTWebViewClient"
-    }
 
     // [FIX#8] proxyClient 不再全局信任证书，由 shouldInterceptRequest 按请求判断
     private val proxyClient = OkHttpClient.Builder()
@@ -76,6 +71,8 @@ class ZTWebViewClient(
         val host = request.url.host ?: ""
         val useProxy = shouldUseProxy(host)
 
+        ZeroTierService.log(if (useProxy) "D" else "D", "[$method] ${if (useProxy) "via ZT proxy" else "direct"}: $host ${request.url.query ?: ""}")
+
         // [FIX#8] 选择正确的 client
         val client = when {
             useProxy && url.startsWith("https://") -> proxyClientInsecure
@@ -86,7 +83,7 @@ class ZTWebViewClient(
         try {
             return executeRequest(client, request, method)
         } catch (e: Exception) {
-            Log.w(TAG, "Request failed for $url: ${e.message}")
+            ZeroTierService.log("W", "Request failed for $url: ${e.message}", e)
             if (useProxy) {
                 try {
                     return executeRequest(directClient, request, method)
@@ -196,8 +193,10 @@ class ZTWebViewClient(
         error: SslError?
     ) {
         val url = try { java.net.URI(error?.url ?: "").host ?: "" } catch (_: Exception) { "" }
+        val viaZT = shouldUseProxy(url)
+        ZeroTierService.log(if (viaZT) "I" else "W", "SSL error for $url, viaZT=$viaZT, error=${error?.primaryError}")
         // [FIX#8] 仅 ZT 子网内放行自签名证书
-        if (shouldUseProxy(url)) {
+        if (viaZT) {
             handler?.proceed()
         } else {
             super.onReceivedSslError(view, handler, error)
@@ -206,9 +205,11 @@ class ZTWebViewClient(
 
     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
         super.onPageStarted(view, url, favicon)
+        url?.let { ZeroTierService.log("D", "Page loading: $it") }
     }
 
     override fun onPageFinished(view: WebView?, url: String?) {
         super.onPageFinished(view, url)
+        url?.let { ZeroTierService.log("I", "Page loaded: $it") }
     }
 }

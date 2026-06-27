@@ -108,6 +108,7 @@ class ZTConfigDialog(
             ).apply { setPadding(0, 0, 0, 20) }
             setOnClickListener {
                 try {
+                    ZeroTierService.logUserAction("Config dialog: Copy log")
                     val log = ZeroTierService.getLog()
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     clipboard.setPrimaryClip(ClipData.newPlainText("ZeroTier Log", log))
@@ -130,7 +131,7 @@ class ZTConfigDialog(
             setTextColor(0xFF666666.toInt())
             setBackgroundColor(0x00000000.toInt())
             setOnClickListener {
-                // [FIX#15] 使用闭包引用
+                ZeroTierService.logUserAction("Config dialog: Cancel")
                 dialog?.dismiss()
             }
         }
@@ -162,9 +163,12 @@ class ZTConfigDialog(
                 }
 
                 if (!hasError) {
+                    ZeroTierService.logUserAction("Config dialog: Save (nwid=$nwid, subnets=$subnets)")
                     onSave(nwid, subnets.ifEmpty { listOf("10.147.0.0/16") })
                     dialog?.dismiss()
                     Toast.makeText(context, "已保存，正在连接...", Toast.LENGTH_SHORT).show()
+                } else {
+                    ZeroTierService.logUserAction("Config dialog: Validation failed (nwid=$nwid, length=${nwid.length}, isHex=${isHexString(nwid)})")
                 }
             }
         }

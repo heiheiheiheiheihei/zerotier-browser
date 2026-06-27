@@ -38,6 +38,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ZeroTierService.logUserAction("App started")
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
@@ -78,11 +79,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
+        ZeroTierService.logUserAction("New intent received")
         handleIntent(intent)
     }
 
     private fun handleIntent(intent: android.content.Intent?) {
         val url = intent?.dataString ?: return
+        ZeroTierService.logUserAction("Intent URL: $url")
         webView.loadUrl(url)
     }
 
@@ -136,16 +139,33 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnGo.setOnClickListener { navigateToUrl() }
         binding.btnBack.setOnClickListener {
+            ZeroTierService.logUserAction("Button: Back")
             if (webView.canGoBack()) webView.goBack()
         }
         binding.btnForward.setOnClickListener {
+            ZeroTierService.logUserAction("Button: Forward")
             if (webView.canGoForward()) webView.goForward()
         }
-        binding.btnRefresh.setOnClickListener { webView.reload() }
-        binding.btnHome.setOnClickListener { webView.loadUrl("about:blank") }
-        binding.btnSettings.setOnClickListener { showConfigDialog() }
-        binding.btnCopyLog.setOnClickListener { copyLogToClipboard() }
-        binding.ztStatusIndicator.setOnClickListener { showConfigDialog() }
+        binding.btnRefresh.setOnClickListener {
+            ZeroTierService.logUserAction("Button: Refresh")
+            webView.reload()
+        }
+        binding.btnHome.setOnClickListener {
+            ZeroTierService.logUserAction("Button: Home (about:blank)")
+            webView.loadUrl("about:blank")
+        }
+        binding.btnSettings.setOnClickListener {
+            ZeroTierService.logUserAction("Button: Settings")
+            showConfigDialog()
+        }
+        binding.btnCopyLog.setOnClickListener {
+            ZeroTierService.logUserAction("Button: Copy log")
+            copyLogToClipboard()
+        }
+        binding.ztStatusIndicator.setOnClickListener {
+            ZeroTierService.logUserAction("Button: ZT status indicator")
+            showConfigDialog()
+        }
     }
 
     private fun navigateToUrl() {
@@ -160,6 +180,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        ZeroTierService.logUserAction("Navigate: $url")
         binding.urlBar.setText(url)
         webView.loadUrl(url)
     }
@@ -174,6 +195,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateZTStatusIndicator(status: ZeroTierService.Status) {
+        ZeroTierService.log("D", "ZT status → $status (addr=${ZeroTierService.getNetworkAddress() ?: "none"})")
         when (status) {
             ZeroTierService.Status.STOPPED -> {
                 binding.ztStatusIndicator.text = "ZT: ⬤ OFF"
@@ -204,12 +226,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startZeroTier() {
+        ZeroTierService.logUserAction("ZT: Starting (networkId=$ztNetworkId)")
         proxyServer.start()
         ZeroTierService.start(this, ztNetworkId)
         Toast.makeText(this, "ZeroTier 启动中...", Toast.LENGTH_SHORT).show()
     }
 
     private fun showConfigDialog() {
+        ZeroTierService.logUserAction("Opening config dialog")
         val dialog = ZTConfigDialog(
             context = this,
             currentNetworkId = ztNetworkId,
@@ -217,6 +241,7 @@ class MainActivity : AppCompatActivity() {
             onSave = { networkId, subnets ->
                 ztNetworkId = networkId
                 ztSubnets = subnets
+                ZeroTierService.logUserAction("Config saved: nwid=$networkId, subnets=$subnets")
                 saveConfig()
                 stopZeroTier()
                 if (networkId.isNotEmpty()) {
@@ -228,6 +253,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopZeroTier() {
+        ZeroTierService.logUserAction("ZT: Stopping")
         proxyServer.stop()
         ZeroTierService.stop()
     }
@@ -261,6 +287,7 @@ class MainActivity : AppCompatActivity() {
         if (ztSubnets.isEmpty()) {
             ztSubnets = listOf("10.147.0.0/16")
         }
+        ZeroTierService.log("D", "Config loaded: nwid=$ztNetworkId, subnets=$ztSubnets")
     }
 
     private fun saveConfig() {
@@ -272,6 +299,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
+        ZeroTierService.logUserAction("Back pressed (canGoBack=${webView.canGoBack()})")
         if (webView.canGoBack()) {
             webView.goBack()
         } else {
@@ -280,6 +308,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        ZeroTierService.logUserAction("App destroyed")
         stopZeroTier()
         super.onDestroy()
     }
