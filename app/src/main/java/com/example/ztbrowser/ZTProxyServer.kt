@@ -325,7 +325,13 @@ class ZTProxyServer(
      * （如果 ZeroTier 同时以系统 VPN 方式安装了虚拟网卡则可路由）
      */
     private fun connectViaZeroTier(target: TargetAddr): Socket {
-        // 优先使用 libzt 原生 socket
+        // 前置检查：ZT 必须有真实 IP 才能走 zts_connect，
+        // 否则 libzt 内部会阻塞直到超时（不可用）
+        val ztAddr = ZeroTierService.getNetworkAddress()
+        if (ztAddr == null || ztAddr == "::1" || ztAddr == "127.0.0.1" || ztAddr.startsWith("0.0.0.0")) {
+            throw Exception("ZeroTier has no real IP (got=$ztAddr) — node may not be authorized by controller")
+        }
+
         return try {
             val fd = ZeroTierService.createSocket()
             if (fd < 0) throw Exception("zts_socket failed")
@@ -336,11 +342,9 @@ class ZTProxyServer(
                 throw Exception("zts_connect failed: $result")
             }
 
-            // 用 fd 构造 Socket（需要 Android 特有 API 或反射）
             createSocketFromFd(fd)
         } catch (e: Exception) {
             ZeroTierService.log("W", "libzt socket failed: ${e.message}, falling back to system socket", e)
-            // 降级：系统 socket（仅当 ZT 以 VPN 方式安装了路由时可用）
             val socket = Socket()
             socket.connect(InetSocketAddress(target.host, target.port), 10_000)
             socket
