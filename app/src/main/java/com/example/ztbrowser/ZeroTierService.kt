@@ -426,7 +426,9 @@ object ZeroTierService {
     fun createSocket(): Int {
         if (!nativeLibLoaded) return -1
         return try {
-            runOnZtThread { ZeroTierNative.zts_bsd_socket(2, 1, 0) }
+            // 直接调用，不走 runOnZtThread——socket 操作线程安全，
+            // 且 read/write 必须能并发（单线程串行化会导致双向转发死锁）
+            ZeroTierNative.zts_bsd_socket(2, 1, 0)
         } catch (e: Throwable) {
             log("E", "createSocket failed", e); -1
         }
@@ -435,7 +437,7 @@ object ZeroTierService {
     fun connectSocket(fd: Int, host: String, port: Int): Int {
         if (!nativeLibLoaded) return -1
         return try {
-            runOnZtThread(timeoutSec = 5) { ZeroTierNative.zts_connect(fd, host, port, 0) }
+            ZeroTierNative.zts_connect(fd, host, port, 5000)
         } catch (e: Throwable) {
             log("E", "connectSocket failed: fd=$fd $host:$port", e); -1
         }
@@ -444,7 +446,7 @@ object ZeroTierService {
     fun closeSocket(fd: Int): Int {
         if (!nativeLibLoaded) return -1
         return try {
-            runOnZtThread { ZeroTierNative.zts_bsd_close(fd) }
+            ZeroTierNative.zts_bsd_close(fd)
         } catch (e: Throwable) {
             log("E", "closeSocket failed: fd=$fd", e); -1
         }
@@ -454,7 +456,7 @@ object ZeroTierService {
     fun readSocket(fd: Int, buf: ByteArray): Int {
         if (!nativeLibLoaded) return -1
         return try {
-            runOnZtThread(timeoutSec = 30) { ZeroTierNative.zts_bsd_read(fd, buf) }
+            ZeroTierNative.zts_bsd_read(fd, buf)
         } catch (e: Throwable) {
             log("E", "readSocket failed: fd=$fd", e); -1
         }
@@ -464,7 +466,7 @@ object ZeroTierService {
     fun writeSocket(fd: Int, buf: ByteArray): Int {
         if (!nativeLibLoaded) return -1
         return try {
-            runOnZtThread(timeoutSec = 30) { ZeroTierNative.zts_bsd_write(fd, buf) }
+            ZeroTierNative.zts_bsd_write(fd, buf)
         } catch (e: Throwable) {
             log("E", "writeSocket failed: fd=$fd", e); -1
         }
@@ -474,7 +476,7 @@ object ZeroTierService {
     fun shutdownSocket(fd: Int, how: Int): Int {
         if (!nativeLibLoaded) return -1
         return try {
-            runOnZtThread { ZeroTierNative.zts_bsd_shutdown(fd, how) }
+            ZeroTierNative.zts_bsd_shutdown(fd, how)
         } catch (e: Throwable) {
             log("E", "shutdownSocket failed: fd=$fd how=$how", e); -1
         }
@@ -484,7 +486,7 @@ object ZeroTierService {
     fun setRecvTimeout(fd: Int, seconds: Int, microseconds: Int): Int {
         if (!nativeLibLoaded) return -1
         return try {
-            runOnZtThread { ZeroTierNative.zts_set_recv_timeout(fd, seconds, microseconds) }
+            ZeroTierNative.zts_set_recv_timeout(fd, seconds, microseconds)
         } catch (e: Throwable) {
             log("E", "setRecvTimeout failed: fd=$fd", e); -1
         }
