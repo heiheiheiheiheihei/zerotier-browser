@@ -154,7 +154,7 @@ object ZeroTierService {
         return try { id.toLong(16); true } catch (_: NumberFormatException) { false }
     }
 
-    private fun <T> runOnZtThread(block: () -> T): T {
+    private fun <T> runOnZtThread(timeoutSec: Long = 10, block: () -> T): T {
         val result = AtomicReference<T>()
         val error = AtomicReference<Throwable>()
         val latch = CountDownLatch(1)
@@ -167,8 +167,8 @@ object ZeroTierService {
                 latch.countDown()
             }
         }
-        if (!latch.await(10, TimeUnit.SECONDS)) {
-            throw Exception("ZeroTier operation timed out (10s)")
+        if (!latch.await(timeoutSec, TimeUnit.SECONDS)) {
+            throw Exception("ZeroTier operation timed out (${timeoutSec}s)")
         }
         val err = error.get()
         if (err != null) throw err
@@ -288,8 +288,8 @@ object ZeroTierService {
     }
 
     private fun startPollingOnline(nwid: Long) {
-        log("I", "Starting online poll (30s timeout)...")
-        val maxRetries = 30
+        log("I", "Starting online poll (60s timeout, waiting for real IP)...")
+        val maxRetries = 60
         val retries = intArrayOf(0)
 
         pollRunnable = object : Runnable {
@@ -297,22 +297,33 @@ object ZeroTierService {
                 if (!started) return
                 try {
                     if (node?.isOnline() == true) {
-                        _status.value = Status.ONLINE
                         val addr = node?.getIPv4Address(nwid)?.hostAddress ?: "unknown"
                         val addr6 = node?.getIPv6Address(nwid)?.hostAddress ?: ""
                         val mac = node?.getMACAddress(nwid) ?: ""
-                        // 缓存地址，供 getNetworkAddress() / get6PlaneAddress() 非阻塞读取
-                        cachedIPv4 = addr
-                        cachedIPv6 = addr6
-                        log("I", "ONLINE | IPv4=$addr | IPv6=$addr6 | MAC=$mac")
-                        return
+
+                        // 拒绝回环/零址 — ZT 网络不会分配 loopback 地址
+                        val isRealAddr = addr != "unknown" &&
+                            addr != "::1" && addr != "127.0.0.1" &&
+                            !addr.startsWith("0.0.0.0") && !addr.startsWith("::0")
+
+                        if (isRealAddr) {
+                            _status.value = Status.ONLINE
+                            cachedIPv4 = addr
+                            cachedIPv6 = addr6
+                            log("I", "ONLINE | IPv4=$addr | IPv6=$addr6 | MAC=$mac")
+                            return
+                        } else {
+                            if (retries[0] % 10 == 0) {
+                                log("D", "Waiting for IP assignment... (retry ${retries[0]}, got=$addr)")
+                            }
+                        }
                     }
                 } catch (e: Throwable) {
                     log("D", "Poll err: ${e.message}")
                 }
                 retries[0]++
                 if (retries[0] >= maxRetries) {
-                    log("W", "Connection timeout (30s)")
+                    log("W", "Connection timeout (60s) — node online but no IP assigned. Check network controller authorization.")
                     _status.value = Status.OFFLINE
                 } else {
                     ztHandler.postDelayed(this, 1000)
@@ -376,7 +387,7 @@ object ZeroTierService {
     fun connectSocket(fd: Int, host: String, port: Int): Int {
         if (!nativeLibLoaded) return -1
         return try {
-            runOnZtThread { ZeroTierNative.zts_connect(fd, host, port, 0) }
+            runOnZtThread(timeoutSec = 5) { ZeroTierNative.zts_connect(fd, host, port, 0) }
         } catch (e: Throwable) {
             log("E", "connectSocket failed: fd=$fd $host:$port", e); -1
         }
