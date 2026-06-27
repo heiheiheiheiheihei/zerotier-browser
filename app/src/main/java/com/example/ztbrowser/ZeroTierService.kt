@@ -242,6 +242,13 @@ object ZeroTierService {
             return
         }
 
+        // 等待原生节点完成初始化（start() 返回后仍需时间完成内部设置）
+        // 立即 join() 会触发 native crash（SIGSEGV），尤其在 arm64 Android 16 上
+        try {
+            Thread.sleep(500)
+        } catch (_: InterruptedException) {}
+        log("D", "Node init delay done, proceeding to join")
+
         val nwid = networkId.toLong(16)
         log("D", "Calling node.join($networkId)...")
         val joinResult = node!!.join(nwid)
