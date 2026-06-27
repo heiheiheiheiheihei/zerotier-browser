@@ -119,20 +119,24 @@ object ZeroTierService {
                 "Arch: ${android.os.Build.SUPPORTED_ABIS.joinToString(",")}"
         val header = "=== ZeroTier Browser Log ===\n$deviceInfo\n\n"
 
-        // 内存缓冲区 + 上次持久化日志（总是带上，崩溃时可对比）
         val memLog = synchronized(logBuffer) { logBuffer.joinToString("\n") }
         val parts = mutableListOf<String>()
 
         logFilePath?.let { path ->
-            val prevFile = File(path).resolveSibling("zt_log.prev.txt")
-            if (prevFile.exists()) parts.add("=== Previous run ===\n" + prevFile.readText())
+            try {
+                val prevFile = File(path).resolveSibling("zt_log.prev.txt")
+                if (prevFile.exists()) parts.add("=== Previous run ===\n" + prevFile.readText())
+            } catch (_: Exception) {}
         }
 
-        if (memLog.isNotEmpty()) parts.add(memLog)
-        else {
+        if (memLog.isNotEmpty()) {
+            parts.add(memLog)
+        } else {
             logFilePath?.let { path ->
-                val curFile = File(path)
-                if (curFile.exists()) parts.add(curFile.readText())
+                try {
+                    val curFile = File(path)
+                    if (curFile.exists()) parts.add(curFile.readText())
+                } catch (_: Exception) {}
             }
         }
 
@@ -208,6 +212,13 @@ object ZeroTierService {
         val ztDir = File(context.filesDir, ZT_HOME_DIR)
         ztDir.deleteRecursively()
         ztDir.mkdirs()
+
+        // 重建日志文件（deleteRecursively 会删掉它，导致后续 log() 写入孤儿 fd）
+        logFilePath?.let { path ->
+            try { logFileWriter?.close() } catch (_: Exception) {}
+            logFileWriter = PrintWriter(File(path), "UTF-8")
+        }
+
         val planetPath = File(ztDir, PLANET_FILE).absolutePath
         log("D", "ZT dir: ${ztDir.absolutePath}")
 
