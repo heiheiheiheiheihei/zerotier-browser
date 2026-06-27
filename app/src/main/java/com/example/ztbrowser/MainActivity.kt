@@ -241,6 +241,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun startZeroTier() {
         ZeroTierService.logUserAction("ZT: Starting (networkId=$ztNetworkId)")
+        // 用当前最新的 ztSubnets 重建 proxyServer（配置变更后子网可能已更新）
+        proxyServer = try {
+            ZTProxyServer(port = 1080, ztSubnets = ztSubnets)
+        } catch (e: Exception) {
+            ZeroTierService.log("E", "ZTProxyServer rebuild failed", e)
+            ZTProxyServer(port = 1080, ztSubnets = emptyList())
+        }
+        // 同步更新 WebViewClient 的子网判断范围
+        (webView.webViewClient as? ZTWebViewClient)?.ztSubnets = ztSubnets
         proxyServer.start()
         ZeroTierService.start(this, ztNetworkId)
         Toast.makeText(this, "ZeroTier 启动中...", Toast.LENGTH_SHORT).show()
