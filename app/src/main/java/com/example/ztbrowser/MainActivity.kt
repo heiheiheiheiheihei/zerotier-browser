@@ -32,6 +32,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var webView: WebView
     private lateinit var proxyServer: ZTProxyServer
+    private lateinit var bodyCollector: RequestBodyCollector
 
     private var ztNetworkId: String = ""
     private var ztSubnets: List<String> = listOf("10.147.0.0/16")
@@ -56,6 +57,9 @@ class MainActivity : AppCompatActivity() {
             ZTProxyServer(port = 1080, ztSubnets = emptyList())
         }
         ZeroTierService.log("D", "onCreate: after ZTProxyServer init")
+
+        // 初始化 POST body 收集器（JS Bridge）
+        bodyCollector = RequestBodyCollector()
 
         setupWebView()
         ZeroTierService.log("D", "onCreate: after setupWebView")
@@ -110,7 +114,10 @@ class MainActivity : AppCompatActivity() {
 
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
 
-        val webViewClient = ZTWebViewClient(this, proxyPort = 1080).apply {
+        // 注册 JS Bridge：POST body 收集器
+        webView.addJavascriptInterface(bodyCollector, "AndroidBodyCollector")
+
+        val webViewClient = ZTWebViewClient(this, proxyPort = 1080, bodyCollector = bodyCollector).apply {
             ztSubnets = this@MainActivity.ztSubnets
         }
 
@@ -123,6 +130,13 @@ class MainActivity : AppCompatActivity() {
 
             override fun onReceivedTitle(view: WebView?, title: String?) {
                 title?.let { binding.titleText.text = it }
+            }
+
+            override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
+                consoleMessage?.let {
+                    ZeroTierService.log("D", "JS[${it.messageLevel()}]: ${it.message()}")
+                }
+                return true
             }
         }
     }
@@ -256,15 +270,6 @@ class MainActivity : AppCompatActivity() {
         ZeroTierService.logUserAction("ZT: Stopping")
         proxyServer.stop()
         ZeroTierService.stop()
-    }
-
-    private fun copyLogToClipboardOnStart() {
-        try {
-            val log = ZeroTierService.getLog()
-            val clipboard = getSystemService(ClipboardManager::class.java)
-            clipboard.setPrimaryClip(ClipData.newPlainText("ZeroTier Log", log))
-            // 静默复制，不弹 Toast（启动时避免干扰用户）
-        } catch (_: Exception) { }
     }
 
     private fun copyLogToClipboard() {

@@ -111,6 +111,7 @@ zerotier-browser/
 │       │   ├── ZeroTierService.kt     # libzt 封装，ZeroTier 协议栈管理
 │       │   ├── ZTProxyServer.kt       # 本地 SOCKS5 代理服务器
 │       │   ├── ZTWebViewClient.kt     # WebView 请求拦截与代理路由
+│       │   ├── RequestBodyCollector.kt # POST body JS Bridge 收集器
 │       │   └── ZTConfigDialog.kt      # 配置对话框
 │       ├── res/
 │       │   ├── layout/activity_main.xml
@@ -119,7 +120,8 @@ zerotier-browser/
 │       │   ├── values/strings.xml
 │       │   └── xml/network_security_config.xml
 │       └── assets/
-│           └── planet             # 可选的 ZeroTier 根服务器配置
+│           ├── planet             # 可选的 ZeroTier 根服务器配置
+│           └── post_body_hook.js  # POST body 劫持注入脚本
 ├── build.gradle.kts
 ├── settings.gradle.kts
 └── gradle.properties
@@ -152,4 +154,8 @@ zerotier-browser/
 2. **性能**：应用层协议栈性能略低于内核态 VPN，但浏览网页足够
 3. **后台保持**：Android 可能会杀死后台进程，导致 ZeroTier 连接中断
 4. **P2P 打洞**：复杂 NAT 环境下可能需要 Moon 节点辅助
+5. **POST body 大小**：JS Bridge 传递的请求体上限 5MB，超大会被丢弃
+6. **FormData/Blob**：JS 劫持无法同步序列化 FormData 和 Blob body，这两类 POST body 会丢失
+7. **单网络**：当前仅支持加入一个 ZeroTier 网络
+8. **debug 构建**：CI 默认构建 debug APK，未做混淆/优化
 *（内容由AI生成，仅供参考）*

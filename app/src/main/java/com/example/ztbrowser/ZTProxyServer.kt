@@ -106,36 +106,17 @@ class ZTProxyServer(
                 val useZT = isInZTSubnet(target.host)
                 ZeroTierService.log("D", "[$connId] Target: ${target.host}:${target.port}, viaZT=$useZT, ZTstatus=${ZeroTierService.status.value}")
 
-                val remoteSocket: Socket = if (useZT && ZeroTierService.status.value == ZeroTierService.Status.ONLINE) {
-                    connectViaZeroTier(target)
+                val online = ZeroTierService.status.value == ZeroTierService.Status.ONLINE
+                if (useZT && online) {
+                    // ZT 路径：用 libzt fd 双向转发，不构造 java.net.Socket
+                    handleZTConnection(connId, input, output, target)
                 } else {
-                    connectDirect(target)
-                }
-
-                // [FIX#6] 根据 bind 地址类型构建正确的 SOCKS5 响应
-                socks5SendResponse(output, remoteSocket)
-
-                val remoteInput = remoteSocket.getInputStream()
-                val remoteOutput = remoteSocket.getOutputStream()
-
-                val routeMethod = if (useZT) "ZeroTier" else "direct"
-                ZeroTierService.log("I", "[$connId] $routeMethod route → ${target.host}:${target.port}")
-
-                // 双向转发
-                coroutineScope {
-                    val job1 = launch(Dispatchers.IO) {
-                        try {
-                            input.copyTo(remoteOutput, bufferSize = 8192)
-                        } catch (_: Exception) {}
-                    }
-                    val job2 = launch(Dispatchers.IO) {
-                        try {
-                            remoteInput.copyTo(output, bufferSize = 8192)
-                        } catch (_: Exception) {}
-                    }
-                    // 任意一方结束时取消另一方
-                    job1.invokeOnCompletion { job2.cancel() }
-                    job2.invokeOnCompletion { job1.cancel() }
+                    // 直连路径：系统 Socket
+                    val remoteSocket = connectDirect(target)
+                    socks5SendResponse(output, remoteSocket)
+                    val routeMethod = if (useZT) "ZeroTier" else "direct"
+                    ZeroTierService.log("I", "[$connId] $routeMethod route → ${target.host}:${target.port}")
+                    tunnelSockets(connId, input, output, remoteSocket)
                 }
             } catch (e: Exception) {
                 ZeroTierService.log("W", "[$connId] Connection error: ${e.message}", e)
@@ -145,6 +126,112 @@ class ZTProxyServer(
                 activeConnections.remove(connId)
             }
         }
+
+    /**
+     * ZT 路径专用：通过 libzt fd 双向转发
+     *
+     * 关键设计：libzt 是用户态协议栈，zts_bsd_socket 返回的 fd 不是内核 fd，
+     * 不能包装成 java.net.Socket（会导致 EBADF）。
+     * 正确做法：用 zts_bsd_read/zts_bsd_write 收发，与 client Socket 手动桥接。
+     */
+    private suspend fun handleZTConnection(
+        connId: Int,
+        clientInput: InputStream,
+        clientOutput: OutputStream,
+        target: TargetAddr
+    ) {
+        var fd = -1
+        try {
+            // 前置检查：ZT 必须有真实 IP
+            val ztAddr = ZeroTierService.getNetworkAddress()
+            if (ztAddr == null || ztAddr == "::1" || ztAddr == "127.0.0.1" || ztAddr.startsWith("0.0.0.0")) {
+                throw Exception("ZeroTier has no real IP (got=$ztAddr) — node may not be authorized by controller")
+            }
+
+            fd = ZeroTierService.createSocket()
+            if (fd < 0) throw Exception("zts_socket failed (fd=$fd)")
+
+            // 设置接收超时，避免 read 永久阻塞（30s）
+            ZeroTierService.setRecvTimeout(fd, 30, 0)
+
+            val result = ZeroTierService.connectSocket(fd, target.host, target.port)
+            if (result < 0) {
+                throw Exception("zts_connect failed: $result")
+            }
+
+            // SOCKS5 成功响应（ZT 路径下没有 localAddress，用 0.0.0.0 占位）
+            socks5SendResponseForFd(clientOutput)
+            ZeroTierService.log("I", "[$connId] ZeroTier route → ${target.host}:${target.port}")
+
+            // 双向转发：client → fd（写），fd（读）→ client
+            coroutineScope {
+                val job1 = launch(Dispatchers.IO) {
+                    // client → ZT
+                    val buf = ByteArray(8192)
+                    try {
+                        while (true) {
+                            val n = clientInput.read(buf)
+                            if (n <= 0) break
+                            val toWrite = if (n == buf.size) buf else buf.copyOf(n)
+                            val written = ZeroTierService.writeSocket(fd, toWrite)
+                            if (written < 0) break
+                        }
+                    } catch (_: Exception) {}
+                    try { ZeroTierService.shutdownSocket(fd, 1) } catch (_: Exception) {}
+                }
+                val job2 = launch(Dispatchers.IO) {
+                    // ZT → client
+                    val buf = ByteArray(8192)
+                    try {
+                        while (true) {
+                            val n = ZeroTierService.readSocket(fd, buf)
+                            if (n <= 0) break
+                            clientOutput.write(buf, 0, n)
+                            clientOutput.flush()
+                        }
+                    } catch (_: Exception) {}
+                    try { clientOutput.flush() } catch (_: Exception) {}
+                }
+                // 任意一方结束，取消另一方
+                job1.invokeOnCompletion { job2.cancel() }
+                job2.invokeOnCompletion { job1.cancel() }
+            }
+        } catch (e: Exception) {
+            ZeroTierService.log("W", "[$connId] ZT connection failed: ${e.message}", e)
+            // 发送 SOCKS5 错误响应（连接失败）
+            try { writeSocks5Error(clientOutput, 0x05) } catch (_: Exception) {}
+        } finally {
+            if (fd >= 0) {
+                try { ZeroTierService.closeSocket(fd) } catch (_: Exception) {}
+            }
+        }
+    }
+
+    /** 双向 Socket 转发（直连路径专用） */
+    private suspend fun tunnelSockets(
+        connId: Int,
+        clientInput: InputStream,
+        clientOutput: OutputStream,
+        remoteSocket: Socket
+    ) {
+        val remoteInput = remoteSocket.getInputStream()
+        val remoteOutput = remoteSocket.getOutputStream()
+        coroutineScope {
+            val job1 = launch(Dispatchers.IO) {
+                try {
+                    clientInput.copyTo(remoteOutput, bufferSize = 8192)
+                } catch (_: Exception) {}
+            }
+            val job2 = launch(Dispatchers.IO) {
+                try {
+                    remoteInput.copyTo(clientOutput, bufferSize = 8192)
+                } catch (_: Exception) {}
+            }
+            job1.invokeOnCompletion { job2.cancel() }
+            job2.invokeOnCompletion { job1.cancel() }
+        }
+        try { remoteSocket.close() } catch (_: Exception) {}
+    }
 
     // ======== SOCKS5 协议实现 ========
 
@@ -242,7 +329,7 @@ class ZTProxyServer(
     }
 
     /**
-     * [FIX#6] 根据 remoteSocket 的实际地址类型构建响应
+     * [FIX#6] 根据 remoteSocket 的实际地址类型构建响应（直连路径专用）
      */
     private fun socks5SendResponse(output: OutputStream, remoteSocket: Socket) {
         val localAddr = remoteSocket.localAddress
@@ -270,6 +357,28 @@ class ZTProxyServer(
             response[9] = (localPort and 0xFF).toByte()
             output.write(response)
         }
+        output.flush()
+    }
+
+    /**
+     * ZT 路径专用 SOCKS5 响应：libzt fd 无法获取 localAddress，用 0.0.0.0:0 占位
+     * （SOCKS5 客户端通常忽略 BND.ADDR/BND.PORT，只看 REP=0x00 表示成功）
+     */
+    private fun socks5SendResponseForFd(output: OutputStream) {
+        val response = ByteArray(10)
+        response[0] = 0x05  // VER
+        response[1] = 0x00  // REP = 成功
+        response[2] = 0x00  // RSV
+        response[3] = 0x01  // ATYP = IPv4
+        // BND.ADDR = 0.0.0.0
+        response[4] = 0
+        response[5] = 0
+        response[6] = 0
+        response[7] = 0
+        // BND.PORT = 0
+        response[8] = 0
+        response[9] = 0
+        output.write(response)
         output.flush()
     }
 
@@ -313,73 +422,6 @@ class ZTProxyServer(
     }
 
     // ======== 连接方法 ========
-
-    /**
-     * [FIX#7] 通过 ZeroTier 网络连接目标
-     *
-     * libzt 在用户态运行，不创建内核可见的虚拟网卡。
-     * 因此系统 Socket() 无法路由到 ZT 子网地址。
-     * 正确做法：使用 libzt 提供的 zts_socket/zts_connect 创建原生 socket。
-     *
-     * 当前实现：先尝试 libzt socket，失败则降级为系统 socket
-     * （如果 ZeroTier 同时以系统 VPN 方式安装了虚拟网卡则可路由）
-     */
-    private fun connectViaZeroTier(target: TargetAddr): Socket {
-        // 前置检查：ZT 必须有真实 IP 才能走 zts_connect，
-        // 否则 libzt 内部会阻塞直到超时（不可用）
-        val ztAddr = ZeroTierService.getNetworkAddress()
-        if (ztAddr == null || ztAddr == "::1" || ztAddr == "127.0.0.1" || ztAddr.startsWith("0.0.0.0")) {
-            throw Exception("ZeroTier has no real IP (got=$ztAddr) — node may not be authorized by controller")
-        }
-
-        return try {
-            val fd = ZeroTierService.createSocket()
-            if (fd < 0) throw Exception("zts_socket failed")
-
-            val result = ZeroTierService.connectSocket(fd, target.host, target.port)
-            if (result < 0) {
-                ZeroTierService.closeSocket(fd)
-                throw Exception("zts_connect failed: $result")
-            }
-
-            createSocketFromFd(fd)
-        } catch (e: Exception) {
-            ZeroTierService.log("W", "libzt socket failed: ${e.message}, falling back to system socket", e)
-            val socket = Socket()
-            socket.connect(InetSocketAddress(target.host, target.port), 10_000)
-            socket
-        }
-    }
-
-    /**
-     * 从文件描述符构造 Java Socket
-     * 简化实现：通过反射或 FileDescriptor 构造
-     */
-    @Throws(Exception::class)
-    private fun createSocketFromFd(fd: Int): Socket {
-        // 构造 FileDescriptor 并注入 native fd
-        val fileDescriptor = java.io.FileDescriptor::class.java.getDeclaredConstructor().apply {
-            isAccessible = true
-        }.newInstance()
-
-        val fdField = java.io.FileDescriptor::class.java.getDeclaredField("fd").apply {
-            isAccessible = true
-        }
-        fdField.setInt(fileDescriptor, fd)
-
-        // 构造 PlainSocketImpl(FileDescriptor)
-        val socketImplClass = Class.forName("java.net.PlainSocketImpl")
-        val socketImpl = socketImplClass.getDeclaredConstructor(java.io.FileDescriptor::class.java).apply {
-            isAccessible = true
-        }.newInstance(fileDescriptor)
-
-        // 通过 protected Socket(SocketImpl) 构造 Socket 并注入正确的 impl
-        val socketCtor = Socket::class.java.getDeclaredConstructor(java.net.SocketImpl::class.java)
-        socketCtor.isAccessible = true
-        val socket = socketCtor.newInstance(socketImpl)
-
-        return socket
-    }
 
     private fun connectDirect(target: TargetAddr): Socket {
         val socket = Socket()

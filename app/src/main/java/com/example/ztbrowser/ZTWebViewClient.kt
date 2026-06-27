@@ -12,6 +12,10 @@ import java.net.Proxy as JavaProxy
 import java.net.InetSocketAddress
 import java.net.InetAddress
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
+import java.security.cert.X509Certificate
 
 /**
  * 自定义 WebViewClient，通过 SOCKS5 代理处理内网请求
@@ -23,7 +27,8 @@ import java.util.concurrent.TimeUnit
  */
 class ZTWebViewClient(
     private val context: Context,
-    private val proxyPort: Int = 1080
+    private val proxyPort: Int = 1080,
+    private val bodyCollector: RequestBodyCollector? = null
 ) : WebViewClient() {
 
     // [FIX#8] proxyClient 不再全局信任证书，由 shouldInterceptRequest 按请求判断
@@ -35,9 +40,21 @@ class ZTWebViewClient(
         .followSslRedirects(true)
         .build()
 
-    // ZT 子网专用：信任自签名证书
+    // 信任所有证书的 TrustManager（仅用于 ZT 子网自签名证书场景）
+    private val trustAllManager = object : X509TrustManager {
+        override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+        override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
+        override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+    }
+
+    private val trustAllSslContext = SSLContext.getInstance("TLS").apply {
+        init(null, arrayOf<TrustManager>(trustAllManager), java.security.SecureRandom())
+    }
+
+    // ZT 子网专用：信任自签名证书（sslSocketFactory + hostnameVerifier 双重放宽）
     private val proxyClientInsecure = OkHttpClient.Builder()
         .proxy(JavaProxy(JavaProxy.Type.SOCKS, InetSocketAddress("127.0.0.1", proxyPort)))
+        .sslSocketFactory(trustAllSslContext.socketFactory, trustAllManager)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)
@@ -112,11 +129,16 @@ class ZTWebViewClient(
         when (method.uppercase()) {
             "GET", "HEAD", "DELETE" -> builder.method(method, null)
             "POST", "PUT", "PATCH" -> {
-                // [FIX#9] WebResourceRequest 不直接提供请求体
-                // 对于表单 POST，WebView 会自动编码；对于 fetch/XHR，需从其他途径获取
-                // 当前实现：尝试用空 body，让 WebView fallback 自行处理
-                val contentType = request.requestHeaders["Content-Type"] ?: "application/octet-stream"
-                builder.method(method, "".toRequestBody(contentType.toMediaTypeOrNull()))
+                // 从 JS Bridge 收集器取出真实请求体
+                val collectedBody = bodyCollector?.consume(method, url)
+                val contentType = collectedBody?.contentType
+                    ?: request.requestHeaders["Content-Type"]
+                    ?: "application/octet-stream"
+                val bodyBytes = collectedBody?.bytes ?: ByteArray(0)
+                if (collectedBody != null) {
+                    ZeroTierService.log("D", "Using collected body for $method $url (${bodyBytes.size} bytes)")
+                }
+                builder.method(method, bodyBytes.toRequestBody(contentType.toMediaTypeOrNull()))
             }
             else -> return null
         }
@@ -135,7 +157,10 @@ class ZTWebViewClient(
                 responseHeaders[pair.first] = pair.second
             }
         }
-        responseHeaders["Access-Control-Allow-Origin"] = "*"
+        // [P2-8] CORS 放宽仅对 ZT 子网响应注入，避免影响公网页面逻辑
+        if (useProxy) {
+            responseHeaders["Access-Control-Allow-Origin"] = "*"
+        }
 
         return WebResourceResponse(
             mimeType,
@@ -206,6 +231,15 @@ class ZTWebViewClient(
     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
         super.onPageStarted(view, url, favicon)
         url?.let { ZeroTierService.log("D", "Page loading: $it") }
+        // 注入 POST body 劫持脚本（必须在页面 JS 执行前）
+        if (bodyCollector != null) {
+            try {
+                val hookJs = context.assets.open("post_body_hook.js").bufferedReader().use { it.readText() }
+                view?.evaluateJavascript(hookJs, null)
+            } catch (e: Exception) {
+                ZeroTierService.log("W", "Failed to inject post_body_hook.js: ${e.message}")
+            }
+        }
     }
 
     override fun onPageFinished(view: WebView?, url: String?) {

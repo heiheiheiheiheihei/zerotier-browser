@@ -23,7 +23,7 @@ object ZeroTierService {
     private const val TAG = "ZeroTierService"
     private const val ZT_HOME_DIR = "zerotier"
     private const val PLANET_FILE = "planet"
-    private const val MAX_LOG_ENTRIES = 200
+    private const val MAX_LOG_ENTRIES = 500
 
     private val ztThread = HandlerThread("ZeroTier-main").apply { start() }
     private val ztHandler = Handler(ztThread.looper)
@@ -43,6 +43,8 @@ object ZeroTierService {
     private val logDateFormat = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.getDefault())
 
     // 文件日志持久化（闪退后日志不丢失）
+    private val writerLock = Any()  // 保护 logFileWriter 的赋值与写入
+    @Volatile
     private var logFileWriter: PrintWriter? = null
     @Volatile
     private var logFilePath: String? = null
@@ -54,7 +56,7 @@ object ZeroTierService {
         File(ztDir, "zt_log.prev.txt").delete()
         if (file.exists()) file.renameTo(File(ztDir, "zt_log.prev.txt"))
         logFilePath = file.absolutePath
-        logFileWriter = PrintWriter(file, "UTF-8").apply {
+        val newWriter = PrintWriter(file, "UTF-8").apply {
             val ts = logDateFormat.format(Date())
             write("[$ts] [I] === App started ===\n")
             // 立即刷入内存缓冲区的已有日志（init 阶段的日志）
@@ -62,6 +64,9 @@ object ZeroTierService {
                 for (entry in logBuffer) write(entry + "\n")
             }
             flush()
+        }
+        synchronized(writerLock) {
+            logFileWriter = newWriter
         }
     }
 
@@ -105,8 +110,8 @@ object ZeroTierService {
             while (logBuffer.size > MAX_LOG_ENTRIES) logBuffer.removeAt(0)
         }
         // 同步写入持久化日志文件（每条立即刷盘，闪退不丢）
-        logFileWriter?.let { w ->
-            synchronized(w) {
+        synchronized(writerLock) {
+            logFileWriter?.let { w ->
                 w.write(line + "\n")
                 if (throwable != null) w.write("[$timestamp] [$level]   ${throwable.stackTraceToString()}\n")
                 w.flush()
@@ -209,6 +214,7 @@ object ZeroTierService {
         log("I", "startInternal on ZT thread, network=$networkId")
 
         // 选择性清理：删除可能损坏的缓存文件，但保留身份文件（避免 MAC 变化）
+        // 注：保留 networks.d —— MAC 已固定，保留网络配置缓存可加速二次启动
         val ztDir = File(context.filesDir, ZT_HOME_DIR)
         ztDir.mkdirs()
 
@@ -218,8 +224,8 @@ object ZeroTierService {
         val savedPublic = identityPublic.takeIf { it.exists() }?.readBytes()
         val savedSecret = identitySecret.takeIf { it.exists() }?.readBytes()
 
-        // 只删除可能损坏的缓存文件（保留身份）
-        val toDelete = listOf("planet", "peers.d", "moons.d", "networks.d")
+        // 只删除可能损坏的缓存文件（保留身份 + networks.d 加速二次启动）
+        val toDelete = listOf("planet", "peers.d", "moons.d")
         for (name in toDelete) {
             File(ztDir, name).let { if (it.exists()) it.deleteRecursively() }
         }
@@ -228,11 +234,8 @@ object ZeroTierService {
         if (savedPublic != null) identityPublic.writeBytes(savedPublic)
         if (savedSecret != null) identitySecret.writeBytes(savedSecret)
 
-        // 日志文件重置（deleteRecursively 可能删过 peers.d 等但没有删日志）
-        logFilePath?.let { path ->
-            try { logFileWriter?.close() } catch (_: Exception) {}
-            logFileWriter = PrintWriter(File(path), "UTF-8")
-        }
+        // 注：logFileWriter 由 setupFileLogging() 统一管理，此处不再重建
+        // （原代码重建 writer 会截断已写入的启动日志，且与 log() 存在竞态）
         log("I", "ZT dir cleaned (identity preserved): ${ztDir.absolutePath}")
 
         log("D", "Creating ZeroTierNode...")
@@ -331,7 +334,7 @@ object ZeroTierService {
                         // 每 15 次 dump 一次完整的网络诊断信息
                         if (retries[0] % 15 == 0 && retries[0] != lastDumpRetry) {
                             lastDumpRetry = retries[0]
-                            dumpNetworkDiagnostics(nwid)
+                            dumpNetworkDiagnostics(nwid, retries[0])
                         }
 
                         if (retries[0] % 10 == 0) {
@@ -355,14 +358,14 @@ object ZeroTierService {
     }
 
     /** 诊断 dump：列出节点知道的所有网络信息 */
-    private fun dumpNetworkDiagnostics(nwid: Long) {
+    private fun dumpNetworkDiagnostics(nwid: Long, retry: Int) {
         try {
             val n = node ?: return
             val online = n.isOnline()
             val ipv4 = n.getIPv4Address(nwid)
             val ipv6 = n.getIPv6Address(nwid)
             val mac = n.getMACAddress(nwid)
-            log("D", "--- NETWORK DIAGNOSTIC (retry ${nwid}) ---")
+            log("D", "--- NETWORK DIAGNOSTIC (retry $retry, nwid=$nwid) ---")
             log("D", "  isOnline()=$online")
             log("D", "  getIPv4Address($nwid)=${ipv4} hostAddr=${ipv4?.hostAddress}")
             log("D", "  getIPv6Address($nwid)=${ipv6} hostAddr=${ipv6?.hostAddress}")
@@ -399,11 +402,12 @@ object ZeroTierService {
         if (shouldCleanup) {
             ztHandler.post {
                 try {
+                    // 仅 leave，不再调用 stop()——避免清理已释放资源导致 native 崩溃
+                    // 下次 start() 会创建新 ZeroTierNode，旧节点由 GC 回收
                     curNode!!.leave(nwid)
-                    curNode.stop()
-                    log("I", "ZeroTier stopped")
+                    log("I", "ZeroTier left network (node.stop skipped to avoid UAF)")
                 } catch (e: Throwable) {
-                    log("E", "Error stopping", e)
+                    log("E", "Error during leave", e)
                 }
             }
         }
@@ -443,6 +447,46 @@ object ZeroTierService {
             runOnZtThread { ZeroTierNative.zts_bsd_close(fd) }
         } catch (e: Throwable) {
             log("E", "closeSocket failed: fd=$fd", e); -1
+        }
+    }
+
+    /** 从 ZT socket 读取数据，返回读取的字节数（buf 填充），-1 表示错误/EOF */
+    fun readSocket(fd: Int, buf: ByteArray): Int {
+        if (!nativeLibLoaded) return -1
+        return try {
+            runOnZtThread(timeoutSec = 30) { ZeroTierNative.zts_bsd_read(fd, buf) }
+        } catch (e: Throwable) {
+            log("E", "readSocket failed: fd=$fd", e); -1
+        }
+    }
+
+    /** 向 ZT socket 写入数据，返回写入的字节数，-1 表示错误 */
+    fun writeSocket(fd: Int, buf: ByteArray): Int {
+        if (!nativeLibLoaded) return -1
+        return try {
+            runOnZtThread(timeoutSec = 30) { ZeroTierNative.zts_bsd_write(fd, buf) }
+        } catch (e: Throwable) {
+            log("E", "writeSocket failed: fd=$fd", e); -1
+        }
+    }
+
+    /** 关闭 ZT socket 的写端或读端（how: 0=SHUT_RD, 1=SHUT_WR, 2=SHUT_RDWR） */
+    fun shutdownSocket(fd: Int, how: Int): Int {
+        if (!nativeLibLoaded) return -1
+        return try {
+            runOnZtThread { ZeroTierNative.zts_bsd_shutdown(fd, how) }
+        } catch (e: Throwable) {
+            log("E", "shutdownSocket failed: fd=$fd how=$how", e); -1
+        }
+    }
+
+    /** 设置 ZT socket 的接收超时（秒+微秒），避免 read 永久阻塞 */
+    fun setRecvTimeout(fd: Int, seconds: Int, microseconds: Int): Int {
+        if (!nativeLibLoaded) return -1
+        return try {
+            runOnZtThread { ZeroTierNative.zts_set_recv_timeout(fd, seconds, microseconds) }
+        } catch (e: Throwable) {
+            log("E", "setRecvTimeout failed: fd=$fd", e); -1
         }
     }
 
