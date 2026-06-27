@@ -202,13 +202,8 @@ object ZeroTierService {
         _status.value = Status.CONNECTING
         log("I", "startInternal on ZT thread, network=$networkId")
 
-        if (node == null) {
-            log("D", "Creating ZeroTierNode...")
-            node = ZeroTierNode()
-            log("I", "ZeroTierNode created")
-        }
-
         // 每次启动前清除上次可能残留的损坏 ZeroTier 数据目录
+        // ⚠️ 必须在创建 ZeroTierNode 之前执行，否则节点可能持有已删除目录中的引用
         val ztDir = File(context.filesDir, ZT_HOME_DIR)
         ztDir.deleteRecursively()
         ztDir.mkdirs()
@@ -218,16 +213,20 @@ object ZeroTierService {
             try { logFileWriter?.close() } catch (_: Exception) {}
             logFileWriter = PrintWriter(File(path), "UTF-8")
         }
+        log("I", "ZT dir reset: ${ztDir.absolutePath}")
 
-        val planetPath = File(ztDir, PLANET_FILE).absolutePath
-        log("D", "ZT dir: ${ztDir.absolutePath}")
+        log("D", "Creating ZeroTierNode...")
+        val ztNode = ZeroTierNode()
+        node = ztNode
+        log("I", "ZeroTierNode created")
 
         // 强制从 assets 复制 planet（确保干净状态）
+        val planetPath = File(ztDir, PLANET_FILE).absolutePath
         log("I", "Copying planet from assets")
         copyPlanetFromAssets(context, planetPath)
 
         log("D", "Calling initFromStorage...")
-        val initResult = node!!.initFromStorage(ztDir.absolutePath)
+        val initResult = ztNode.initFromStorage(ztDir.absolutePath)
         log("I", "initFromStorage returned: $initResult")
         if (initResult != 0) {
             _status.value = Status.OFFLINE
@@ -235,7 +234,7 @@ object ZeroTierService {
         }
 
         log("D", "Calling node.start()...")
-        val startResult = node!!.start()
+        val startResult = ztNode.start()
         log("I", "node.start returned: $startResult")
         if (startResult != 0) {
             _status.value = Status.OFFLINE
@@ -243,18 +242,31 @@ object ZeroTierService {
         }
 
         // 等待原生节点完成初始化（start() 返回后仍需时间完成内部设置）
-        // 立即 join() 会触发 native crash（SIGSEGV），尤其在 arm64 Android 16 上
+        // Android 16 arm64 上立即 join() 会触发 native SIGSEGV
         try {
-            Thread.sleep(500)
+            Thread.sleep(2000)
         } catch (_: InterruptedException) {}
-        log("D", "Node init delay done, proceeding to join")
+        log("D", "Node init delay (2s) done, proceeding to join")
 
         val nwid = networkId.toLong(16)
-        log("D", "Calling node.join($networkId)...")
-        val joinResult = node!!.join(nwid)
-        log("I", "node.join returned: $joinResult")
+
+        // 强制刷盘，确保崩溃前的日志完整保存
+        logFileWriter?.flush()
+
+        val joinResult: Int
+        try {
+            log("D", "Calling node.join($networkId)...")
+            joinResult = ztNode.join(nwid)
+            log("I", "node.join returned: $joinResult")
+        } catch (e: Throwable) {
+            logFileWriter?.flush()
+            log("E", "node.join crashed: ${e.javaClass.simpleName}: ${e.message}", e)
+            node = null
+            _status.value = Status.OFFLINE
+            return
+        }
+
         if (joinResult != 0) {
-            // 不要调用 node.stop() —— 原生层可能崩溃
             log("E", "node.join failed with code $joinResult, abandoning node")
             node = null
             _status.value = Status.OFFLINE
