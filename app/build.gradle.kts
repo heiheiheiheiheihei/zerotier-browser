@@ -8,8 +8,9 @@ android {
     compileSdk = 34
 
     // 固定 debug 签名，确保 CI 每次构建的 APK 签名一致，安装时不冲突
+    // 注意：Gradle 已内置 "debug" signingConfig，用 getByName 覆盖而非 create
     signingConfigs {
-        create("debug") {
+        getByName("debug") {
             storeFile = file("debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
