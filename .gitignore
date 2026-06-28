@@ -14,3 +14,5 @@ local.properties
 *.aab
 *.jks
 *.keystore
+# debug.keystore 必须提交以确保 CI 签名一致，安装不冲突
+!app/debug.keystore

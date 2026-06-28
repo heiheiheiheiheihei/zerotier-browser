@@ -7,6 +7,16 @@ android {
     namespace = "com.example.ztbrowser"
     compileSdk = 34
 
+    // 固定 debug 签名，确保 CI 每次构建的 APK 签名一致，安装时不冲突
+    signingConfigs {
+        create("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     defaultConfig {
         applicationId = "com.example.ztbrowser"
         minSdk = 26
@@ -20,8 +30,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug") // release 复用 debug 签名，确保可覆盖安装
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

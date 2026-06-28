@@ -139,11 +139,11 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload Release APK
-        if: hashFiles('app/build/outputs/apk/release/app-release-unsigned.apk') != ''
+        if: hashFiles('app/build/outputs/apk/release/app-release.apk') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: app-release-unsigned
-          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          name: app-release
+          path: app/build/outputs/apk/release/app-release.apk
 
   release:
     name: Create Release
@@ -153,17 +153,37 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download Release APK (preferred)
+        uses: actions/download-artifact@v4
+        with:
+          name: app-release
+        continue-on-error: true
+
+      - name: Download Debug APK (fallback)
+        if: failure()
+        uses: actions/download-artifact@v4
         with:
           name: app-debug
+
+      - name: Determine APK file
+        id: apk
+        run: |
+          if [ -f app-release.apk ]; then
+            echo "APK=app-release.apk" >> $GITHUB_OUTPUT
+            echo "TYPE=release" >> $GITHUB_OUTPUT
+          else
+            echo "APK=app-debug.apk" >> $GITHUB_OUTPUT
+            echo "TYPE=debug" >> $GITHUB_OUTPUT
+          fi
+          echo "=== Using ${{ steps.apk.outputs.TYPE }} APK: ${{ steps.apk.outputs.APK }} ==="
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.build-apk.outputs.version }}
           name: "ZT Browser - ${{ needs.build-apk.outputs.version }}"
-          body: "ZeroTier Browser APK\n\n版本: ${{ needs.build-apk.outputs.version }}\n提交: ${{ github.sha }}"
-          files: app-debug.apk
+          body: "ZeroTier Browser APK\n\n版本: ${{ needs.build-apk.outputs.version }}\n提交: ${{ github.sha }}\n签名: 固定 debug keystore（签名一致，可覆盖安装）"
+          files: ${{ steps.apk.outputs.APK }}
           draft: false
           prerelease: true
           generate_release_notes: false
